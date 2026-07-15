@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API Capture</title>
+  <title>Blog Tag CSV 处理</title>
   <style>
     * {
       box-sizing: border-box;
     }
     body {
-      width: 300px;
+      width: 360px;
       margin: 0;
       padding: 16px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -25,6 +25,73 @@
       font-size: 12px;
       margin-bottom: 12px;
       line-height: 1.5;
+    }
+    .file-section {
+      margin-bottom: 12px;
+    }
+    input[type="file"] {
+      display: none;
+    }
+    .file-label {
+      display: block;
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px dashed #ccc;
+      border-radius: 4px;
+      text-align: center;
+      cursor: pointer;
+      color: #666;
+      font-size: 13px;
+      background: #fafafa;
+    }
+    .file-label:hover {
+      border-color: #1a73e8;
+      color: #1a73e8;
+    }
+    .file-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border: 1px solid #e8eaed;
+      border-radius: 4px;
+      background: #f8f9fa;
+    }
+    .file-card .file-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .file-card .file-icon {
+      width: 20px;
+      height: 20px;
+      background: #ea4335;
+      color: #fff;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: bold;
+      flex-shrink: 0;
+    }
+    .file-card .file-name {
+      font-size: 13px;
+      color: #333;
+      word-break: break-all;
+    }
+    .file-card .remove-btn {
+      background: transparent;
+      border: none;
+      color: #999;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 4px 6px;
+      flex-shrink: 0;
+    }
+    .file-card .remove-btn:hover {
+      color: #ea4335;
     }
     .actions {
       display: flex;
@@ -43,9 +110,61 @@
       background: #1a73e8;
       color: #fff;
     }
+    button.primary:disabled {
+      background: #a0c2f3;
+      cursor: not-allowed;
+    }
     button.secondary {
       background: #f1f3f4;
       color: #333;
+    }
+    button.secondary:disabled {
+      color: #999;
+      cursor: not-allowed;
+    }
+    button.danger {
+      background: #fce8e6;
+      color: #c5221f;
+    }
+    button.danger:disabled {
+      background: #f5f5f5;
+      color: #999;
+      cursor: not-allowed;
+    }
+    .progress {
+      margin-top: 12px;
+    }
+    .progress-bar {
+      width: 100%;
+      height: 8px;
+      background: #e8eaed;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: #1a73e8;
+      transition: width 0.2s ease;
+    }
+    .progress-segment {
+      height: 100%;
+      float: left;
+    }
+    .progress-segment.success {
+      background: #34a853;
+    }
+    .progress-segment.fail {
+      background: #ea4335;
+    }
+    .progress-segment.pending {
+      background: #e8eaed;
+    }
+    .progress-text {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #666;
+      text-align: right;
     }
     .status {
       margin-top: 12px;
@@ -53,22 +172,83 @@
       border-radius: 4px;
       background: #f1f3f4;
       font-size: 12px;
+      min-height: 36px;
+    }
+    .status-step {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: bold;
+      margin-bottom: 4px;
+      color: #fff;
+      background: #1a73e8;
+    }
+    .status-step.idle {
+      background: #5f6368;
+    }
+    .status-step.capture {
+      background: #f9ab00;
+    }
+    .status-step.process {
+      background: #1a73e8;
+    }
+    .status-step.success {
+      background: #34a853;
+    }
+    .status-step.done {
+      background: #34a853;
+    }
+    .status-title {
+      font-size: 12px;
+      color: #333;
+      word-break: break-all;
     }
   </style>
 </head>
 <body>
-  <h1>API Capture</h1>
+  <h1>Blog Tag CSV 处理</h1>
 
   <div class="info">
-    已自动监听 config.json 中配置的接口。
+    选择包含 URL 列的 CSV 文件，插件将提取 URL 路径最后两段作为 blog_title 和 Title 写入新文件，然后访问 Shopify 后台匹配文章 ID。
+  </div>
+
+  <div class="file-section">
+    <label for="csvFile" id="fileLabel" class="file-label">选择 CSV 文件</label>
+    <input type="file" id="csvFile" accept=".csv" />
+
+    <div id="fileCard" class="file-card" style="display: none;">
+      <div class="file-info">
+        <div class="file-icon">CSV</div>
+        <div class="file-name" id="fileName"></div>
+      </div>
+      <button id="removeFile" class="remove-btn" type="button">删除</button>
+    </div>
   </div>
 
   <div class="actions">
-    <button id="clear" class="secondary">清空记录</button>
-    <button id="export" class="primary">导出</button>
+    <button id="process" class="primary" disabled>处理 CSV</button>
+    <button id="match" class="secondary" disabled>匹配 ID</button>
   </div>
 
-  <div class="status" id="status">就绪</div>
+  <div class="actions">
+    <button id="export" class="secondary" disabled>导出 CSV</button>
+    <button id="tag" class="secondary" disabled>打标签</button>
+  </div>
+
+  <div class="actions">
+    <button id="stop" class="danger" disabled>停止</button>
+  </div>
+
+  <div class="progress" id="progressContainer" style="display: none;">
+    <div class="progress-bar" id="progressBar"></div>
+    <div class="progress-text" id="progressText">0 / 0</div>
+  </div>
+
+  <div class="status" id="status">
+    <div class="status-step idle" id="statusStep">就绪</div>
+    <div class="status-title" id="statusTitle">请选择 CSV 文件</div>
+  </div>
 
   <script src="popup.js"></script>
 </body>

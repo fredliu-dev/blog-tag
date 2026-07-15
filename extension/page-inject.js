@@ -27,8 +27,6 @@
 
   function shouldCapture(url) {
     if (MATCH_KEYWORDS.length === 0) return false;
-    console.log('检查 URL:', url);
-    console.log('匹配关键词:', MATCH_KEYWORDS);
     return MATCH_KEYWORDS.every((keyword) => url.includes(keyword));
   }
 
@@ -58,7 +56,6 @@
         if (shouldCapture(url)) {
           try {
             const data = await parseBody(response);
-            console.log('解析响应体:', data);
             sendToContentScript({
               url,
               method: typeof input === 'string' ? (args[1]?.method || 'GET') : input.method,
