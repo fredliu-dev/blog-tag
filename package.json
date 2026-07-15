@@ -1,0 +1,11 @@
+{
+  "name": "api-capture-extension",
+  "version": "1.0.0",
+  "description": "拦截网页中的接口请求并导出响应数据",
+  "type": "module",
+  "scripts": {
+    "generate-icons": "node scripts/generate-icons.js"
+  },
+  "devDependencies": {},
+  "dependencies": {}
+}
