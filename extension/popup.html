@@ -5,276 +5,393 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Blog Tag CSV 处理</title>
   <style>
+    :root {
+      --bg: transparent;
+      --card: #1c1c1e;
+      --text: #f5f5f7;
+      --text-secondary: #8e8e93;
+      --border: rgba(255, 255, 255, 0.1);
+      --shadow: 0 24px 70px rgba(0, 0, 0, 0.5), 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      --accent: #0a84ff;
+      --accent-soft: rgba(10, 132, 255, 0.12);
+      --radius: 22px;
+      --radius-sm: 12px;
+      --transition: 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
+    }
+
     * {
       box-sizing: border-box;
     }
+
     body {
-      width: 360px;
+      width: 380px;
       margin: 0;
-      padding: 16px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 14px;
-      color: #333;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.45;
     }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      padding: 20px;
+    }
+
     h1 {
-      margin: 0 0 12px;
-      font-size: 16px;
+      margin: 0 0 6px;
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
     }
-    .info {
-      color: #666;
+
+    .subtitle {
+      color: var(--text-secondary);
       font-size: 12px;
-      margin-bottom: 12px;
+      margin-bottom: 18px;
       line-height: 1.5;
     }
+
     .file-section {
-      margin-bottom: 12px;
+      margin-bottom: 16px;
     }
+
     input[type="file"] {
       display: none;
     }
+
     .file-label {
       display: block;
       width: 100%;
-      padding: 8px 12px;
-      border: 1px dashed #ccc;
-      border-radius: 4px;
+      padding: 14px;
+      border: 1.5px dashed rgba(10, 132, 255, 0.45);
+      border-radius: var(--radius-sm);
       text-align: center;
       cursor: pointer;
-      color: #666;
+      color: var(--accent);
       font-size: 13px;
-      background: #fafafa;
+      font-weight: 500;
+      background: var(--accent-soft);
+      transition: all var(--transition);
     }
+
     .file-label:hover {
-      border-color: #1a73e8;
-      color: #1a73e8;
+      background: rgba(10, 132, 255, 0.18);
+      border-color: rgba(10, 132, 255, 0.65);
+      transform: translateY(-1px);
     }
+
     .file-card {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 12px;
-      border: 1px solid #e8eaed;
-      border-radius: 4px;
-      background: #f8f9fa;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.05);
+      transition: all var(--transition);
     }
+
+    .file-card:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
     .file-card .file-info {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       min-width: 0;
     }
+
     .file-card .file-icon {
-      width: 20px;
-      height: 20px;
-      background: #ea4335;
+      width: 28px;
+      height: 28px;
+      background: linear-gradient(135deg, #ff453a, #ff6b6b);
       color: #fff;
-      border-radius: 3px;
+      border-radius: 7px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 10px;
-      font-weight: bold;
+      font-size: 9px;
+      font-weight: 700;
       flex-shrink: 0;
+      box-shadow: 0 2px 6px rgba(255, 69, 58, 0.25);
     }
+
     .file-card .file-name {
       font-size: 13px;
-      color: #333;
+      color: var(--text);
       word-break: break-all;
+      font-weight: 500;
     }
+
     .file-card .remove-btn {
-      background: transparent;
+      background: rgba(255, 255, 255, 0.07);
       border: none;
-      color: #999;
+      color: var(--text-secondary);
       cursor: pointer;
       font-size: 12px;
-      padding: 4px 6px;
+      font-weight: 500;
+      padding: 6px 10px;
+      border-radius: 8px;
       flex-shrink: 0;
+      transition: all var(--transition);
+      margin-left: 8px;
     }
+
     .file-card .remove-btn:hover {
-      color: #ea4335;
+      background: rgba(255, 69, 58, 0.15);
+      color: #ff453a;
     }
+
     .actions {
-      display: flex;
-      gap: 8px;
-      margin-top: 12px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
     }
+
+    .actions:last-of-type {
+      margin-bottom: 0;
+    }
+
     button {
-      flex: 1;
-      padding: 8px 12px;
+      padding: 10px 12px;
       border: none;
-      border-radius: 4px;
+      border-radius: 12px;
       cursor: pointer;
       font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+      transition: all var(--transition);
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      border: 1px solid var(--border);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
     }
+
+    button:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    button:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
     button.primary {
-      background: #1a73e8;
+      background: var(--accent);
       color: #fff;
+      border-color: transparent;
+      box-shadow: 0 2px 10px rgba(10, 132, 255, 0.35);
     }
-    button.primary:disabled {
-      background: #a0c2f3;
-      cursor: not-allowed;
+
+    button.primary:hover:not(:disabled) {
+      background: #409cff;
+      box-shadow: 0 4px 16px rgba(10, 132, 255, 0.45);
     }
-    button.secondary {
-      background: #f1f3f4;
-      color: #333;
-    }
-    button.secondary:disabled {
-      color: #999;
-      cursor: not-allowed;
-    }
-    button.export {
-      background: #e8d5f7;
-      color: #7b1fa2;
-    }
-    button.export:disabled {
-      background: #f3e8fa;
-      color: #b39ddb;
-      cursor: not-allowed;
-    }
+
     button.match {
-      background: #ffe5cc;
-      color: #e65100;
+      background: rgba(255, 159, 10, 0.12);
+      color: #ffb340;
+      border-color: rgba(255, 159, 10, 0.2);
     }
-    button.match:disabled {
-      background: #fff3e6;
-      color: #ffb380;
-      cursor: not-allowed;
+
+    button.match:hover:not(:disabled) {
+      background: rgba(255, 159, 10, 0.2);
+      border-color: rgba(255, 159, 10, 0.35);
     }
+
+    button.export {
+      background: rgba(175, 82, 222, 0.12);
+      color: #da8fff;
+      border-color: rgba(175, 82, 222, 0.2);
+    }
+
+    button.export:hover:not(:disabled) {
+      background: rgba(175, 82, 222, 0.2);
+      border-color: rgba(175, 82, 222, 0.35);
+    }
+
     button.tag {
-      background: #c8e6c9;
-      color: #2e7d32;
+      background: rgba(48, 209, 88, 0.12);
+      color: #5ce75c;
+      border-color: rgba(48, 209, 88, 0.2);
     }
-    button.tag:disabled {
-      background: #e8f5e9;
-      color: #a5d6a7;
-      cursor: not-allowed;
+
+    button.tag:hover:not(:disabled) {
+      background: rgba(48, 209, 88, 0.2);
+      border-color: rgba(48, 209, 88, 0.35);
     }
+
     button.danger {
-      background: #fce8e6;
-      color: #c5221f;
+      background: rgba(255, 69, 58, 0.08);
+      color: #ff453a;
+      border-color: rgba(255, 69, 58, 0.18);
     }
-    button.danger:disabled {
-      background: #f5f5f5;
-      color: #999;
-      cursor: not-allowed;
+
+    button.danger:hover:not(:disabled) {
+      background: rgba(255, 69, 58, 0.15);
+      border-color: rgba(255, 69, 58, 0.3);
     }
+
+    .actions:has(only-child) {
+      grid-template-columns: 1fr;
+    }
+
     .progress {
-      margin-top: 12px;
+      margin-top: 16px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
     }
+
     .progress-bar {
       width: 100%;
-      height: 8px;
-      background: #e8eaed;
-      border-radius: 4px;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 100px;
       overflow: hidden;
     }
+
     .progress-fill {
       height: 100%;
       width: 0%;
-      background: #1a73e8;
-      transition: width 0.2s ease;
+      background: linear-gradient(90deg, #0a84ff, #64d2ff);
+      border-radius: 100px;
+      transition: width 0.3s ease;
     }
+
     .progress-segment {
       height: 100%;
       float: left;
     }
+
     .progress-segment.success {
-      background: #34a853;
+      background: #30d158;
     }
+
     .progress-segment.fail {
-      background: #ea4335;
+      background: #ff453a;
     }
+
     .progress-segment.pending {
-      background: #e8eaed;
+      background: rgba(255, 255, 255, 0.08);
     }
+
     .progress-text {
-      margin-top: 6px;
+      margin-top: 8px;
       font-size: 12px;
-      color: #666;
+      color: var(--text-secondary);
       text-align: right;
+      font-weight: 500;
     }
+
     .status {
-      margin-top: 12px;
-      padding: 8px;
-      border-radius: 4px;
-      background: #f1f3f4;
+      margin-top: 16px;
+      padding: 14px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
       font-size: 12px;
-      min-height: 36px;
+      min-height: 48px;
     }
+
     .status-step {
-      display: inline-block;
-      padding: 2px 6px;
-      border-radius: 3px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 100px;
       font-size: 11px;
-      font-weight: bold;
-      margin-bottom: 4px;
+      font-weight: 700;
+      margin-bottom: 6px;
       color: #fff;
-      background: #1a73e8;
+      background: var(--text-secondary);
+      letter-spacing: 0.2px;
     }
+
     .status-step.idle {
-      background: #5f6368;
+      background: #636366;
     }
+
     .status-step.capture {
-      background: #f9ab00;
+      background: #ff9f0a;
     }
+
     .status-step.process {
-      background: #1a73e8;
+      background: var(--accent);
     }
-    .status-step.success {
-      background: #34a853;
-    }
+
+    .status-step.success,
     .status-step.done {
-      background: #34a853;
+      background: #30d158;
     }
+
     .status-title {
-      font-size: 12px;
-      color: #333;
+      font-size: 13px;
+      color: var(--text);
       word-break: break-all;
+      font-weight: 500;
     }
   </style>
 </head>
 <body>
-  <h1>Blog Tag CSV 处理</h1>
+  <div class="card">
+    <h1>Blog Tag CSV 处理</h1>
 
-  <div class="info">
-    选择包含 URL 列的 CSV 文件，插件将提取 URL 路径最后两段作为 blog_title 和 Title 写入新文件，然后访问 Shopify 后台匹配文章 ID。最后给文字打上对应的标签。
-  </div>
-
-  <div class="file-section">
-    <label for="csvFile" id="fileLabel" class="file-label">选择 CSV 文件</label>
-    <input type="file" id="csvFile" accept=".csv" />
-
-    <div id="fileCard" class="file-card" style="display: none;">
-      <div class="file-info">
-        <div class="file-icon">CSV</div>
-        <div class="file-name" id="fileName"></div>
-      </div>
-      <button id="removeFile" class="remove-btn" type="button">删除</button>
+    <div class="subtitle">
+      选择包含 URL 列的 CSV 文件，插件将提取 URL 路径最后两段作为 blog_title 和 Title 写入新文件，然后访问 Shopify 后台匹配文章 ID，最后给文章打上对应的标签。
     </div>
-  </div>
 
-  <div class="actions">
-    <button id="process" class="primary" disabled>处理 CSV</button>
-    <button id="match" class="match" disabled>匹配 ID</button>
-  </div>
+    <div class="file-section">
+      <label for="csvFile" id="fileLabel" class="file-label">选择 CSV 文件</label>
+      <input type="file" id="csvFile" accept=".csv" />
 
-  <div class="actions">
-    <button id="export" class="export" disabled>导出 CSV</button>
-    <button id="tag" class="tag" disabled>打标签</button>
-  </div>
+      <div id="fileCard" class="file-card" style="display: none;">
+        <div class="file-info">
+          <div class="file-icon">CSV</div>
+          <div class="file-name" id="fileName"></div>
+        </div>
+        <button id="removeFile" class="remove-btn" type="button">删除</button>
+      </div>
+    </div>
 
-  <div class="actions">
-    <button id="stop" class="danger" disabled>停止</button>
-  </div>
+    <div class="actions">
+      <button id="process" class="primary" disabled>处理 CSV</button>
+      <button id="match" class="match" disabled>匹配 ID</button>
+    </div>
 
-  <div class="progress" id="progressContainer" style="display: none;">
-    <div class="progress-bar" id="progressBar"></div>
-    <div class="progress-text" id="progressText">0 / 0</div>
-  </div>
+    <div class="actions">
+      <button id="export" class="export" disabled>导出 CSV</button>
+      <button id="tag" class="tag" disabled>打标签</button>
+    </div>
 
-  <div class="status" id="status">
-    <div class="status-step idle" id="statusStep">就绪</div>
-    <div class="status-title" id="statusTitle">请选择 CSV 文件</div>
+    <div class="actions" style="grid-template-columns: 1fr;">
+      <button id="stop" class="danger" disabled>停止</button>
+    </div>
+
+    <div class="progress" id="progressContainer" style="display: none;">
+      <div class="progress-bar" id="progressBar"></div>
+      <div class="progress-text" id="progressText">0 / 0</div>
+    </div>
+
+    <div class="status" id="status">
+      <div class="status-step idle" id="statusStep">就绪</div>
+      <div class="status-title" id="statusTitle">请选择 CSV 文件</div>
+    </div>
   </div>
 
   <script src="popup.js"></script>
