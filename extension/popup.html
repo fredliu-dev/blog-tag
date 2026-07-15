@@ -122,6 +122,33 @@
       color: #999;
       cursor: not-allowed;
     }
+    button.export {
+      background: #e8d5f7;
+      color: #7b1fa2;
+    }
+    button.export:disabled {
+      background: #f3e8fa;
+      color: #b39ddb;
+      cursor: not-allowed;
+    }
+    button.match {
+      background: #ffe5cc;
+      color: #e65100;
+    }
+    button.match:disabled {
+      background: #fff3e6;
+      color: #ffb380;
+      cursor: not-allowed;
+    }
+    button.tag {
+      background: #c8e6c9;
+      color: #2e7d32;
+    }
+    button.tag:disabled {
+      background: #e8f5e9;
+      color: #a5d6a7;
+      cursor: not-allowed;
+    }
     button.danger {
       background: #fce8e6;
       color: #c5221f;
@@ -210,7 +237,7 @@
   <h1>Blog Tag CSV 处理</h1>
 
   <div class="info">
-    选择包含 URL 列的 CSV 文件，插件将提取 URL 路径最后两段作为 blog_title 和 Title 写入新文件，然后访问 Shopify 后台匹配文章 ID。
+    选择包含 URL 列的 CSV 文件，插件将提取 URL 路径最后两段作为 blog_title 和 Title 写入新文件，然后访问 Shopify 后台匹配文章 ID。最后给文字打上对应的标签。
   </div>
 
   <div class="file-section">
@@ -228,12 +255,12 @@
 
   <div class="actions">
     <button id="process" class="primary" disabled>处理 CSV</button>
-    <button id="match" class="secondary" disabled>匹配 ID</button>
+    <button id="match" class="match" disabled>匹配 ID</button>
   </div>
 
   <div class="actions">
-    <button id="export" class="secondary" disabled>导出 CSV</button>
-    <button id="tag" class="secondary" disabled>打标签</button>
+    <button id="export" class="export" disabled>导出 CSV</button>
+    <button id="tag" class="tag" disabled>打标签</button>
   </div>
 
   <div class="actions">

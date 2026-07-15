@@ -104,11 +104,22 @@
 
   async function tagRow(row) {
     const { id, tags, changeType } = row;
+
+    const normalizedChangeType = (changeType || '').trim();
+    const shouldReplace = normalizedChangeType === '替换' || normalizedChangeType.toLowerCase() === 'replace';
+
+    console.log('[tagRow] id=', id, 'changeType=', changeType, 'shouldReplace=', shouldReplace, 'tags=', tags);
+
+    // 替换模式下，先等待现有标签删除按钮加载完成
+    if (shouldReplace) {
+      console.log('[tagRow] 替换模式，等待页面标签区域加载');
+      await waitForAnyTagRemoveButton();
+    }
+
     const existingTags = readExistingTags();
     const tagsToAdd = tags.filter((tag) => !existingTags.includes(tag));
 
-    const shouldReplace = changeType === '替换';
-    const shouldAdd = !changeType || changeType === '新增' || changeType === '替换';
+    console.log('[tagRow] existingTags=', existingTags, 'tagsToAdd=', tagsToAdd);
 
     if (!shouldReplace && tagsToAdd.length === 0) {
       return { action: 'skipped', reason: '所有标签已存在' };
@@ -139,7 +150,15 @@
   }
 
   async function removeAllExistingTags() {
-    const buttons = document.querySelectorAll('.Polaris-Tag__Button.Polaris-Tag__Icon');
+    // 先尝试精确匹配，再尝试更宽的选择器
+    let buttons = document.querySelectorAll('.Polaris-Tag__Button.Polaris-Tag__Icon');
+    if (buttons.length === 0) {
+      buttons = document.querySelectorAll('[class*="Polaris-Tag__Button"]');
+    }
+    if (buttons.length === 0) {
+      buttons = document.querySelectorAll('[class*="Polaris-Tag__Icon"]');
+    }
+    console.log('[removeAllExistingTags] found buttons count=', buttons.length);
     for (const btn of Array.from(buttons)) {
       btn.click();
       await waitFor(50);
@@ -189,6 +208,13 @@
       };
       check();
     });
+  }
+
+  async function waitForAnyTagRemoveButton() {
+    const selector = '.Polaris-Tag__Button.Polaris-Tag__Icon, [class*="Polaris-Tag__Button"], [class*="Polaris-Tag__Icon"]';
+    const el = await waitForElementWithInterval(selector, 1000, 10);
+    console.log('[waitForAnyTagRemoveButton] found=', !!el);
+    return el;
   }
 
   function waitForElement(selector, timeout = 5000) {
