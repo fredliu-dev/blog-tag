@@ -138,7 +138,7 @@
       console.log('[handleTagRow] start row=', row);
       const result = await tagRow(row);
       console.log('[handleTagRow] success result=', result);
-      sendResponse({ success: true, result });
+      sendResponse(result);
     } catch (err) {
       console.error('[handleTagRow] error', err);
       sendResponse({ success: false, error: err.message });
@@ -155,7 +155,7 @@
 
     await waitForTagsStable();
     const beforeTags = readExistingTags();
-    console.log('[tagRow] beforeTags=', beforeTags);
+    console.log('[tagRow] final beforeTags=', beforeTags);
 
     if (shouldReplace) {
       const tagsToRemove = beforeTags.filter((tag) => !tags.includes(tag));
@@ -250,11 +250,12 @@
     saveBtn.click();
     console.log('[clickSaveButton] 已点击保存按钮');
 
-    const record = await waitForUpdateRecord(30000);
-    if (!record) {
-      return { success: false, error: '未捕获到 ArticleDetailsUpdate 接口' };
+    const res = await chrome.runtime.sendMessage({ type: 'WAIT_FOR_ARTICLE_DETAILS_UPDATE', timeout: 30000 });
+    if (!res || !res.success) {
+      return { success: false, error: res?.error || '未捕获到保存接口' };
     }
 
+    const record = res.records?.ArticleDetailsUpdate || {};
     const status = record.status || 0;
     const hasError = hasGraphQLError(record.data);
     console.log('[clickSaveButton] ArticleDetailsUpdate status=', status, 'hasError=', hasError);
@@ -263,31 +264,6 @@
       return { success: true, record };
     }
     return { success: false, error: `更新失败：HTTP ${status}${hasError ? '，GraphQL 返回错误' : ''}`, record };
-  }
-
-  function waitForUpdateRecord(timeoutMs = 30000) {
-    return new Promise((resolve) => {
-      let resolved = false;
-      const handler = (event) => {
-        if (event.source !== window) return;
-        const msg = event.data || {};
-        if (msg.type !== 'API_CAPTURE_RECORD') return;
-        const record = msg.record || {};
-        const url = record.url || '';
-        if (url.includes('admin.shopify.com/api/operations') && url.includes('ArticleDetailsUpdate')) {
-          window.removeEventListener('message', handler);
-          resolved = true;
-          resolve(record);
-        }
-      };
-      window.addEventListener('message', handler);
-      setTimeout(() => {
-        if (!resolved) {
-          window.removeEventListener('message', handler);
-          resolve(null);
-        }
-      }, timeoutMs);
-    });
   }
 
   function hasGraphQLError(data) {
@@ -308,7 +284,11 @@
     ].filter(Boolean);
     for (const sel of selectorList) {
       const elements = document.querySelectorAll(sel);
-      const tags = Array.from(elements).map((el) => el.textContent.trim()).filter(Boolean);
+      console.log('[readExistingTags] selector=', sel, 'elementsCount=', elements.length);
+      const tags = Array.from(elements).map((el) => {
+        console.log('[readExistingTags] element text=', el.textContent.trim(), 'outerHTML=', el.outerHTML.slice(0, 200));
+        return el.textContent.trim();
+      }).filter(Boolean);
       if (tags.length > 0) {
         console.log('[readExistingTags] selector=', sel, 'tags=', tags);
         return tags;

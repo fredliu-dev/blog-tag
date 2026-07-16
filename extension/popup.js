@@ -328,9 +328,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function startTaggingStatusPolling() {
+    console.log('[startTaggingStatusPolling] start');
     if (statusTimer) clearInterval(statusTimer);
     statusTimer = setInterval(async () => {
       const status = await chrome.runtime.sendMessage({ type: 'GET_TAGGING_STATUS' });
+      console.log('[startTaggingStatusPolling] status=', status);
       if (!status) return;
       const step = status.isRunning ? 'tagging' : (status.step === 'done' ? 'tagging' : status.step);
       setStatus(step, status.message);
@@ -348,14 +350,15 @@ document.addEventListener('DOMContentLoaded', () => {
           const beforeIndex = getColumnIndex('打标前 tag');
           const afterIndex = getColumnIndex('打标后 tag');
           const statusIndex = getColumnIndex('打标情况');
-          console.log('[startTaggingStatusPolling] column indexes', { beforeIndex, afterIndex, statusIndex });
-          result.rows.forEach((row) => {
-            console.log('[startTaggingStatusPolling] process row', row);
+          console.log('[startTaggingStatusPolling] column indexes', { beforeIndex, afterIndex, statusIndex, csvRowsLength: csvRows.length });
+          result.rows.forEach((row, loopIndex) => {
+            console.log('[startTaggingStatusPolling] process row', loopIndex, row);
             const idx = row.rowIndex;
             if (idx == null || idx < 0 || idx >= csvRows.length) {
               console.log('[startTaggingStatusPolling] skip row, invalid idx', idx, 'csvRows.length=', csvRows.length);
               return;
             }
+            console.log('[startTaggingStatusPolling] writing to csvRows[', idx, ']', { beforeTags: row.beforeTags, afterTags: row.afterTags, status: row.status });
             if (beforeIndex !== -1) {
               csvRows[idx][beforeIndex] = (row.beforeTags || []).join(', ');
             }
@@ -507,7 +510,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const secondLast = segments[segments.length - 2] || '';
         blogTitle = toTitleCase(secondLast);
         title = last;
-      } catch (e) {}
+      } catch (e) { }
       row[blogTitleIndex] = blogTitle;
       row[titleIndex] = title;
       updateProgress(i + 1, total);

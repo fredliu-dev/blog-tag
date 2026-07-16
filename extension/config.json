@@ -6,6 +6,19 @@
   ],
   "listening": true,
   "defaultChangeType": "替换",
+  "apiPatterns": {
+    "matchArticleId": {
+      "required": [
+        "ArticleList"
+      ]
+    },
+    "saveArticleTags": {
+      "required": [
+        "ArticleDetailsUpdate",
+        "ArticleDetails"
+      ]
+    }
+  },
   "selectors": {
     "nextPageButton": ".Polaris-ButtonGroup__Item",
     "saveButton": "._ContextualButton_10jvh_1._Primary_10jvh_28",

@@ -63,6 +63,7 @@ function saveTaggingState() {
     taggingResults: state.tagging.results,
     taggingTabId: state.tagging.tabId,
   });
+  console.log('[saveTaggingState] rows=', state.tagging.rows.map((r) => ({ id: r.id, rowIndex: r.rowIndex, beforeTags: r.beforeTags, afterTags: r.afterTags, status: r.status })));
 }
 
 function getMatchingStatus() {
@@ -143,9 +144,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'WAIT_FOR_ARTICLE_DETAILS_UPDATE') {
-    waitForArticleSaveRecords(message.timeout || 30000).then((records) => {
-      const updateRecord = records.update;
-      const detailsRecord = records.details;
+    waitForApiRecords('saveArticleTags', message.timeout || 30000).then((records) => {
+      const updateRecord = records.ArticleDetailsUpdate;
+      const detailsRecord = records.ArticleDetails;
 
       if (!updateRecord || !detailsRecord) {
         const missing = [];
@@ -170,6 +171,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (detailsStatus < 200 || detailsStatus >= 300 || detailsHasError) errors.push('ArticleDetails 失败');
         sendResponse({ success: false, error: errors.join('，') });
       }
+    }).catch((err) => {
+      console.error('[WAIT_FOR_ARTICLE_DETAILS_UPDATE] error', err);
+      sendResponse({ success: false, error: err?.message || '未知错误' });
     });
     return true;
   }
@@ -392,7 +396,8 @@ async function matchRow(tabId, blogTitle, url, idIndex, row) {
     state.matching.message = `正在捕获接口：${blogTitle}`;
     saveMatchingState();
 
-    const record = await waitForRecord(30000);
+    const records = await waitForApiRecords('matchArticleId', 30000);
+    const record = records.ArticleList;
     if (!record) return false;
 
     state.matching.step = 'success';
@@ -426,50 +431,76 @@ async function matchRow(tabId, blogTitle, url, idIndex, row) {
   }
 }
 
-async function clearLatestRecord() {
-  state.latestRecord = null;
-}
+let configCache = null;
 
-async function waitForRecord(timeoutMs = 30000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (state.matching.shouldStop) return null;
-    if (state.latestRecord) {
-      const record = state.latestRecord;
-      state.latestRecord = null;
-      return record;
-    }
-    await sleep(500);
+async function loadConfig() {
+  try {
+    const res = await fetch(chrome.runtime.getURL('config.json'));
+    return await res.json();
+  } catch (err) {
+    console.warn('[loadConfig] 加载配置失败，使用默认配置', err);
+    return {
+      keywords: ['ArticleList', 'ArticleDetailsUpdate', 'ArticleDetails'],
+      defaultChangeType: '替换',
+      selectors: {},
+      apiPatterns: {
+        matchArticleId: { required: ['ArticleList'] },
+        saveArticleTags: { required: ['ArticleDetailsUpdate', 'ArticleDetails'] },
+      },
+    };
   }
-  return null;
 }
 
-async function waitForArticleSaveRecords(timeoutMs = 30000) {
-  const result = { update: null, details: null };
+async function getConfig() {
+  if (configCache) return configCache;
+  configCache = await loadConfig();
+  return configCache;
+}
+
+// 解析 URL 中是否包含某个 keyword
+function urlContainsKeyword(url, keyword) {
+  if (!url || !keyword) return false;
+  return url.includes(keyword);
+}
+
+// 统一等待一组接口记录
+async function waitForApiRecords(patternName, timeoutMs = 30000) {
+  const config = await getConfig();
+  const patterns = config.apiPatterns || {};
+  const pattern = patterns[patternName];
+  if (!pattern || !Array.isArray(pattern.required) || pattern.required.length === 0) {
+    throw new Error(`未配置 apiPatterns.${patternName}`);
+  }
+
+  const required = pattern.required;
+  const result = Object.fromEntries(required.map((key) => [key, null]));
+
+  console.log(`[waitForApiRecords] pattern=${patternName} required=${JSON.stringify(required)}`);
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    const shouldStop = state.matching.shouldStop || state.tagging.shouldStop;
+    if (shouldStop) return result;
+
     if (state.latestRecord) {
       const url = state.latestRecord.url || '';
       if (url.includes('admin.shopify.com/api/operations')) {
-        if (url.includes('ArticleDetailsUpdate') && !result.update) {
-          result.update = state.latestRecord;
-          console.log('[waitForArticleSaveRecords] 捕获 ArticleDetailsUpdate');
-        }
-        if (url.includes('ArticleDetails') && !url.includes('ArticleDetailsUpdate') && !result.details) {
-          result.details = state.latestRecord;
-          console.log('[waitForArticleSaveRecords] 捕获 ArticleDetails');
+        for (const key of required) {
+          if (!result[key] && url.includes(key)) {
+            result[key] = state.latestRecord;
+            console.log(`[waitForApiRecords] 捕获 ${key}`);
+          }
         }
       }
       state.latestRecord = null;
 
-      if (result.update && result.details) {
-        console.log('[waitForArticleSaveRecords] 两个接口均已捕获');
+      if (required.every((key) => result[key])) {
+        console.log('[waitForApiRecords] 所有接口均已捕获');
         return result;
       }
     }
     await sleep(500);
   }
-  console.log('[waitForArticleSaveRecords] 超时，update=', !!result.update, 'details=', !!result.details);
+  console.log('[waitForApiRecords] 超时', result);
   return result;
 }
 
@@ -478,6 +509,10 @@ function hasGraphQLError(data) {
   if (Array.isArray(data.errors) && data.errors.length > 0) return true;
   if (data.data && Array.isArray(data.data.errors) && data.data.errors.length > 0) return true;
   return false;
+}
+
+async function clearLatestRecord() {
+  state.latestRecord = null;
 }
 
 async function tryFillIdFromRecord(record, url, idIndex, row) {
@@ -566,6 +601,7 @@ async function startTaggingProcess() {
       console.log('[startTaggingProcess] send TAG_ROW to tab', tagging.tabId, 'row=', row);
       const result = await chrome.tabs.sendMessage(tagging.tabId, { type: 'TAG_ROW', row });
       console.log('[startTaggingProcess] tag result', result, 'for row', row);
+      console.log('[startTaggingProcess] tag result JSON', JSON.stringify(result, null, 2));
 
       // 等待 1 秒，避免 Shopify 的 beforeunload 弹窗
       await sleep(1000);
@@ -576,12 +612,12 @@ async function startTaggingProcess() {
         row.beforeTags = result.beforeTags || [];
         row.afterTags = result.afterTags || [];
         row.status = '已打标';
-        console.log('[startTaggingProcess] success beforeTags=', row.beforeTags, 'afterTags=', row.afterTags);
+        console.log('[startTaggingProcess] success result row', i, 'rowIndex=', row.rowIndex, 'beforeTags=', row.beforeTags, 'afterTags=', row.afterTags);
       } else {
         tagging.results[i] = 'fail';
         tagging.message = `处理失败：文章 ${row.id}，${result?.error || '未知错误'}`;
         row.status = '未打标';
-        console.log('[startTaggingProcess] fail error=', result?.error);
+        console.log('[startTaggingProcess] fail error=', result?.error, 'rowIndex=', row.rowIndex);
       }
     } catch (err) {
       console.error('[startTaggingProcess] error', err);
