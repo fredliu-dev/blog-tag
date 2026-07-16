@@ -1,7 +1,21 @@
 {
   "keywords": [
     "admin.shopify.com/api/operations",
-    "ArticleList"
+    "ArticleList",
+    "ArticleDetailsUpdate",
+    "ArticleDetails"
   ],
-  "listening": true
+  "listening": true,
+  "defaultChangeType": "替换",
+  "selectors": {
+    "nextPageButton": ".Polaris-ButtonGroup__Item",
+    "saveButton": "._ContextualButton_10jvh_1._Primary_10jvh_28",
+    "tagRemoveButton": ".Polaris-Tag__Button.Polaris-Tag__Icon",
+    "tagRemoveButtonFallback": "[class*=\"Polaris-Tag__Button\"]",
+    "tagRemoveButtonFallback2": "[class*=\"Polaris-Tag__Icon\"]",
+    "tagText": ".Polaris-Tag__Text",
+    "tagWrapper": "[class*=\"Polaris-Tag\"]",
+    "tagInput": "input[name=\"article.tags\"]",
+    "tagDropdownOption": ".Polaris-Listbox-Action"
+  }
 }

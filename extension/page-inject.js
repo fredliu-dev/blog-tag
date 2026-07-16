@@ -27,7 +27,7 @@
 
   function shouldCapture(url) {
     if (MATCH_KEYWORDS.length === 0) return false;
-    return MATCH_KEYWORDS.every((keyword) => url.includes(keyword));
+    return MATCH_KEYWORDS.some((keyword) => url.includes(keyword));
   }
 
   // 解析响应体

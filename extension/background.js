@@ -142,6 +142,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'WAIT_FOR_ARTICLE_DETAILS_UPDATE') {
+    waitForArticleSaveRecords(message.timeout || 30000).then((records) => {
+      const updateRecord = records.update;
+      const detailsRecord = records.details;
+
+      if (!updateRecord || !detailsRecord) {
+        const missing = [];
+        if (!updateRecord) missing.push('ArticleDetailsUpdate');
+        if (!detailsRecord) missing.push('ArticleDetails');
+        sendResponse({ success: false, error: `未捕获到接口：${missing.join('、')}` });
+        return;
+      }
+
+      const updateStatus = updateRecord.status || 0;
+      const detailsStatus = detailsRecord.status || 0;
+      const updateHasError = hasGraphQLError(updateRecord.data);
+      const detailsHasError = hasGraphQLError(detailsRecord.data);
+      console.log(`[WAIT_FOR_ARTICLE_DETAILS_UPDATE] ArticleDetailsUpdate status=${updateStatus} hasError=${updateHasError}, ArticleDetails status=${detailsStatus} hasError=${detailsHasError}`);
+
+      if (updateStatus >= 200 && updateStatus < 300 && !updateHasError &&
+        detailsStatus >= 200 && detailsStatus < 300 && !detailsHasError) {
+        sendResponse({ success: true, records });
+      } else {
+        const errors = [];
+        if (updateStatus < 200 || updateStatus >= 300 || updateHasError) errors.push('ArticleDetailsUpdate 失败');
+        if (detailsStatus < 200 || detailsStatus >= 300 || detailsHasError) errors.push('ArticleDetails 失败');
+        sendResponse({ success: false, error: errors.join('，') });
+      }
+    });
+    return true;
+  }
+
   if (message.type === 'START_MATCHING') {
     state.matching.csvHeaders = message.csvHeaders || [];
     state.matching.csvRows = message.csvRows || [];
@@ -214,6 +246,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'GET_TAGGING_STATUS') {
     sendResponse(getTaggingStatus());
+    return true;
+  }
+
+  if (message.type === 'GET_TAGGING_RESULT') {
+    sendResponse({
+      rows: state.tagging.rows,
+      results: state.tagging.results,
+    });
     return true;
   }
 
@@ -402,6 +442,42 @@ async function waitForRecord(timeoutMs = 30000) {
   return null;
 }
 
+async function waitForArticleSaveRecords(timeoutMs = 30000) {
+  const result = { update: null, details: null };
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (state.latestRecord) {
+      const url = state.latestRecord.url || '';
+      if (url.includes('admin.shopify.com/api/operations')) {
+        if (url.includes('ArticleDetailsUpdate') && !result.update) {
+          result.update = state.latestRecord;
+          console.log('[waitForArticleSaveRecords] 捕获 ArticleDetailsUpdate');
+        }
+        if (url.includes('ArticleDetails') && !url.includes('ArticleDetailsUpdate') && !result.details) {
+          result.details = state.latestRecord;
+          console.log('[waitForArticleSaveRecords] 捕获 ArticleDetails');
+        }
+      }
+      state.latestRecord = null;
+
+      if (result.update && result.details) {
+        console.log('[waitForArticleSaveRecords] 两个接口均已捕获');
+        return result;
+      }
+    }
+    await sleep(500);
+  }
+  console.log('[waitForArticleSaveRecords] 超时，update=', !!result.update, 'details=', !!result.details);
+  return result;
+}
+
+function hasGraphQLError(data) {
+  if (!data) return false;
+  if (Array.isArray(data.errors) && data.errors.length > 0) return true;
+  if (data.data && Array.isArray(data.data.errors) && data.data.errors.length > 0) return true;
+  return false;
+}
+
 async function tryFillIdFromRecord(record, url, idIndex, row) {
   try {
     const data = record.data || record;
@@ -440,14 +516,15 @@ function waitForTabLoad(tabId) {
     const listener = (updatedTabId, changeInfo) => {
       if (updatedTabId === tabId && changeInfo.status === 'complete') {
         chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
+        // Shopify 是 SPA，status complete 后 React 组件仍在初始化，多等一会儿
+        setTimeout(resolve, 1500);
       }
     };
     chrome.tabs.onUpdated.addListener(listener);
     setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
       resolve();
-    }, 5000);
+    }, 10000);
   });
 }
 
@@ -476,6 +553,7 @@ async function startTaggingProcess() {
     const row = tagging.rows[i];
     tagging.step = 'process';
     tagging.message = `正在打标签：文章 ${row.id}`;
+    console.log('[startTaggingProcess] start row', i, 'id=', row.id, 'row=', row);
     saveTaggingState();
 
     const url = `https://admin.shopify.com/store/aftershokz-com/content/articles/${row.id}`;
@@ -483,22 +561,31 @@ async function startTaggingProcess() {
       await chrome.tabs.update(tagging.tabId, { url });
       await waitForTabLoad(tagging.tabId);
 
+      console.log('[startTaggingProcess] send TAG_ROW to tab', tagging.tabId, 'row=', row);
       const result = await chrome.tabs.sendMessage(tagging.tabId, { type: 'TAG_ROW', row });
       console.log('[startTaggingProcess] tag result', result, 'for row', row);
 
       if (result && result.success) {
         tagging.results[i] = 'success';
         tagging.message = `已处理：文章 ${row.id}`;
+        row.beforeTags = result.beforeTags || [];
+        row.afterTags = result.afterTags || [];
+        row.status = '已打标';
+        console.log('[startTaggingProcess] success beforeTags=', row.beforeTags, 'afterTags=', row.afterTags);
       } else {
         tagging.results[i] = 'fail';
         tagging.message = `处理失败：文章 ${row.id}，${result?.error || '未知错误'}`;
+        row.status = '未打标';
+        console.log('[startTaggingProcess] fail error=', result?.error);
       }
     } catch (err) {
       console.error('[startTaggingProcess] error', err);
       tagging.results[i] = 'fail';
       tagging.message = `处理失败：文章 ${row.id}，${err.message}`;
+      row.status = '未打标';
     }
     saveTaggingState();
+    console.log('[startTaggingProcess] saved row', i, 'row=', row);
   }
 
   tagging.step = 'done';
@@ -506,6 +593,7 @@ async function startTaggingProcess() {
   tagging.isRunning = false;
   tagging.currentIndex = 0;
   saveTaggingState();
+  console.log('[startTaggingProcess] done rows=', tagging.rows);
   stopKeepAlive();
 
   chrome.notifications.create('tagging-done', {
