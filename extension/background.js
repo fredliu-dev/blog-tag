@@ -331,39 +331,56 @@ async function startMatchingProcess() {
     return;
   }
 
+  matching.results = Array(total).fill(null);
   for (let i = 0; i < total; i++) {
-    matching.currentIndex = i;
+    if (matching.csvRows[i][idIndex]) {
+      matching.results[i] = 'success';
+    }
+  }
+
+  // 按 blog_title 分组，只收集未匹配的记录索引
+  const groups = new Map();
+  for (let i = 0; i < total; i++) {
+    if (matching.results[i]) continue;
+    const row = matching.csvRows[i];
+    const blogTitle = row[blogTitleIndex] || '';
+    if (!groups.has(blogTitle)) {
+      groups.set(blogTitle, []);
+    }
+    groups.get(blogTitle).push(i);
+  }
+
+  console.log('[startMatchingProcess] groups=', Array.from(groups.entries()).map(([k, v]) => `${k}(${v.length})`).join(', '));
+
+  for (const [blogTitle, rowIndexes] of groups) {
     if (matching.shouldStop) break;
 
-    const row = matching.csvRows[i];
-    if (row[idIndex]) {
-      matching.results[i] = 'success';
-      saveMatchingState();
-      continue;
-    }
-
-    const url = row[urlIndex] || '';
-    const blogTitle = row[blogTitleIndex] || '';
-    const title = row[titleIndex] || '';
+    const pendingRows = rowIndexes.filter((i) => !matching.csvRows[i][idIndex]);
+    if (pendingRows.length === 0) continue;
 
     matching.step = 'capture';
-    matching.currentTitle = title || url;
-    matching.message = `正在匹配：${title || url}`;
+    matching.currentTitle = blogTitle;
+    matching.currentIndex = pendingRows[0];
+    matching.message = `正在匹配 blog：${blogTitle}，剩余 ${pendingRows.length} 条`;
     saveMatchingState();
 
-    const matched = await matchRow(shopifyTab.id, blogTitle, url, idIndex, row);
+    const allMatched = await matchRowsByBlogTitle(shopifyTab.id, blogTitle, pendingRows, idIndex, urlIndex);
+    console.log('[matchRowsByBlogTitle] allMatched=', allMatched, 'blogTitle=', blogTitle, 'remaining=', pendingRows.length);
 
-    console.log('[matchRow] matched result', matched, 'for url=', url, 'row=', row);
-    if (matched) {
-      matching.step = 'process';
-      matching.message = `已匹配：${title || url}`;
-      matching.results[i] = 'success';
-    } else {
-      matching.step = 'idle';
-      matching.message = `未匹配：${title || url}`;
-      matching.results[i] = 'fail';
+    // 未匹配的记录标记为 fail
+    for (const i of pendingRows) {
+      if (!matching.csvRows[i][idIndex]) {
+        matching.results[i] = 'fail';
+      }
     }
     saveMatchingState();
+  }
+
+  // 补齐剩余状态
+  for (let i = 0; i < total; i++) {
+    if (!matching.results[i]) {
+      matching.results[i] = matching.csvRows[i][idIndex] ? 'success' : 'fail';
+    }
   }
 
   matching.step = 'done';
@@ -381,6 +398,98 @@ async function startMatchingProcess() {
   }, (notificationId) => {
     console.log('[background] 匹配完成通知已创建', notificationId, chrome.runtime.lastError);
   });
+}
+
+async function matchRowsByBlogTitle(tabId, blogTitle, rowIndexes, idIndex, urlIndex) {
+  const searchUrl = `https://admin.shopify.com/store/aftershokz-com/content/articles?blog_title=${encodeURIComponent(blogTitle)}`;
+  await chrome.tabs.update(tabId, { url: searchUrl });
+  await waitForTabLoad(tabId);
+  await clearLatestRecord();
+
+  let hasMorePages = true;
+  while (hasMorePages && rowIndexes.length > 0) {
+    if (state.matching.shouldStop) return false;
+
+    state.matching.step = 'capture';
+    state.matching.message = `正在捕获接口：${blogTitle}，剩余 ${rowIndexes.length} 条`;
+    state.matching.currentIndex = rowIndexes[0];
+    saveMatchingState();
+
+    const records = await waitForApiRecords('matchArticleId', 30000);
+    const record = records.ArticleList;
+    if (!record) return false;
+
+    state.matching.step = 'success';
+    state.matching.message = `捕获成功：${blogTitle}`;
+    saveMatchingState();
+
+    state.matching.step = 'process';
+    state.matching.message = `正在解析数据：${blogTitle}`;
+    saveMatchingState();
+
+    tryFillIdsFromRecord(record, rowIndexes, idIndex, urlIndex);
+
+    // 移除已匹配的记录
+    const remaining = rowIndexes.filter((i) => !state.matching.csvRows[i][idIndex]);
+    rowIndexes.length = 0;
+    rowIndexes.push(...remaining);
+
+    console.log('[matchRowsByBlogTitle] after match, remaining=', remaining.length);
+
+    if (rowIndexes.length === 0) {
+      return true;
+    }
+
+    if (state.matching.shouldStop) return false;
+
+    state.matching.step = 'capture';
+    state.matching.message = '未全部匹配，准备翻页';
+    saveMatchingState();
+
+    let clickResult;
+    try {
+      clickResult = await chrome.tabs.sendMessage(tabId, { type: 'EXECUTE_CLICK_NEXT_BUTTON' });
+    } catch (err) {
+      console.warn('[matchRowsByBlogTitle] click next error', err);
+      return false;
+    }
+
+    if (!clickResult || clickResult.isDisabled || !clickResult.success) {
+      console.log('[matchRowsByBlogTitle] no more pages', clickResult);
+      hasMorePages = false;
+    } else {
+      await clearLatestRecord();
+    }
+  }
+
+  return rowIndexes.length === 0;
+}
+
+function tryFillIdsFromRecord(record, rowIndexes, idIndex, urlIndex) {
+  try {
+    const data = record.data || record;
+    const edges = data?.data?.onlineStore?.articles?.edges || [];
+    console.log('[tryFillIdsFromRecord] edgesCount=', edges.length, 'rowIndexes=', rowIndexes);
+    for (const edge of edges) {
+      const node = edge?.node || {};
+      const relativePath = node.relativeStorefrontPath || '';
+      const nodeId = extractIdFromGid(node.id);
+      console.log('[tryFillIdsFromRecord] node.relativeStorefrontPath=', relativePath, 'node.id=', node.id, 'extractedId=', nodeId);
+      if (!relativePath) continue;
+      for (const i of rowIndexes) {
+        const row = state.matching.csvRows[i];
+        const url = row[urlIndex] || '';
+        if (url.includes(relativePath)) {
+          row[idIndex] = nodeId;
+          state.matching.results[i] = 'success';
+          console.log('[tryFillIdsFromRecord] matched! rowIndex=', i, 'id=', row[idIndex]);
+        }
+      }
+    }
+    saveMatchingState();
+  } catch (e) {
+    console.error('[tryFillIdsFromRecord] error', e);
+  }
 }
 
 async function matchRow(tabId, blogTitle, url, idIndex, row) {
@@ -603,8 +712,8 @@ async function startTaggingProcess() {
       console.log('[startTaggingProcess] tag result', result, 'for row', row);
       console.log('[startTaggingProcess] tag result JSON', JSON.stringify(result, null, 2));
 
-      // 等待 1 秒，避免 Shopify 的 beforeunload 弹窗
-      await sleep(1000);
+      // 等待 3 秒，避免 Shopify 的 beforeunload 弹窗
+      await sleep(3000);
 
       if (result && result.success) {
         tagging.results[i] = 'success';

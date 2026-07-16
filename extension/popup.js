@@ -311,12 +311,15 @@ document.addEventListener('DOMContentLoaded', () => {
         popupCurrentAction = '';
 
         const result = await chrome.runtime.sendMessage({ type: 'GET_MATCHING_RESULT' });
+        console.log('[startStatusPolling] matching result=', result, 'csvRows sample=', result?.csvRows?.slice(0, 2));
         if (result) {
           if (result.csvHeaders) csvHeaders = result.csvHeaders;
           if (result.csvRows) csvRows = result.csvRows;
           isProcessed = true;
           savePopupState();
         }
+
+        console.log('[startStatusPolling] after restore, csvHeaders=', csvHeaders, 'csvRows=', csvRows.slice(0, 2), 'canTag=', canTag());
 
         matchBtn.disabled = false;
         stopBtn.disabled = true;
@@ -710,6 +713,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       chrome.runtime.sendMessage({ type: 'GET_MATCHING_STATUS' }).then((status) => {
+        console.log('[loadPopupState] matching status=', status);
         if (status && status.isRunning) {
           processBtn.disabled = true;
           exportBtn.disabled = true;
@@ -719,22 +723,94 @@ document.addEventListener('DOMContentLoaded', () => {
           startStatusPolling();
           return;
         }
-        chrome.runtime.sendMessage({ type: 'GET_TAGGING_STATUS' }).then((tagStatus) => {
-          if (tagStatus && tagStatus.isRunning) {
-            processBtn.disabled = true;
-            matchBtn.disabled = true;
-            exportBtn.disabled = true;
-            tagBtn.disabled = true;
-            stopBtn.disabled = false;
-            popupCurrentAction = 'tagging';
-            savePopupState();
-            startTaggingStatusPolling();
-          } else if (csvRows.length > 0) {
-            // 没有运行中任务但已有数据，显示默认就绪状态
-            setStatus('idle', '就绪');
-          }
-        });
+        if (status && status.step === 'done' && csvRows.length > 0) {
+          // 匹配已结束，主动取回结果
+          chrome.runtime.sendMessage({ type: 'GET_MATCHING_RESULT' }).then((result) => {
+            console.log('[loadPopupState] matching done result=', result, 'csvRows sample=', result?.csvRows?.slice(0, 2));
+            if (result) {
+              if (result.csvHeaders) csvHeaders = result.csvHeaders;
+              if (result.csvRows) csvRows = result.csvRows;
+              isProcessed = true;
+              savePopupState();
+            }
+            // 继续检查 tagging 状态
+            restoreTaggingStatus(status);
+          });
+          return;
+        }
+        restoreTaggingStatus(status);
       });
     });
   });
+
+  function restoreTaggingStatus(matchingStatus) {
+    chrome.runtime.sendMessage({ type: 'GET_TAGGING_STATUS' }).then((tagStatus) => {
+      console.log('[loadPopupState] tagging status=', tagStatus);
+      if (tagStatus && tagStatus.isRunning) {
+        processBtn.disabled = true;
+        matchBtn.disabled = true;
+        exportBtn.disabled = true;
+        tagBtn.disabled = true;
+        stopBtn.disabled = false;
+        popupCurrentAction = 'tagging';
+        savePopupState();
+        startTaggingStatusPolling();
+        return;
+      }
+      if (tagStatus && tagStatus.step === 'done' && csvRows.length > 0) {
+        // 打标签已结束，主动取回结果并写回 CSV
+        chrome.runtime.sendMessage({ type: 'GET_TAGGING_RESULT' }).then((result) => {
+          console.log('[loadPopupState] tagging done result=', result, 'csvRows.length=', csvRows.length);
+          if (tagStatus.total > 0) {
+            updateProgress(tagStatus.currentIndex, tagStatus.total, tagStatus.results || []);
+          }
+          ensureTagResultColumns();
+          if (result && result.rows) {
+            const beforeIndex = getColumnIndex('打标前 tag');
+            const afterIndex = getColumnIndex('打标后 tag');
+            const statusIndex = getColumnIndex('打标情况');
+            console.log('[loadPopupState] tagging column indexes', { beforeIndex, afterIndex, statusIndex });
+            result.rows.forEach((row, loopIndex) => {
+              console.log('[loadPopupState] tagging process row', loopIndex, row);
+              const idx = row.rowIndex;
+              if (idx == null || idx < 0 || idx >= csvRows.length) {
+                console.log('[loadPopupState] skip invalid rowIndex', idx);
+                return;
+              }
+              if (beforeIndex !== -1) csvRows[idx][beforeIndex] = (row.beforeTags || []).join(', ');
+              if (afterIndex !== -1) csvRows[idx][afterIndex] = (row.afterTags || []).join(', ');
+              if (statusIndex !== -1) csvRows[idx][statusIndex] = row.status || '';
+              console.log('[loadPopupState] wrote csvRows[', idx, ']=', csvRows[idx]);
+            });
+            isProcessed = true;
+            savePopupState();
+          }
+          setStatus('done', '打标签完成');
+          processBtn.disabled = false;
+          matchBtn.disabled = false;
+          exportBtn.disabled = false;
+          tagBtn.disabled = !canTag();
+          stopBtn.disabled = true;
+        });
+        return;
+      }
+      if (matchingStatus && matchingStatus.step === 'done' && csvRows.length > 0) {
+        // 匹配已完成，显示匹配进度
+        if (matchingStatus.total > 0) {
+          updateProgress(matchingStatus.currentIndex, matchingStatus.total, matchingStatus.results || []);
+        }
+        setStatus('done', '匹配完成');
+        processBtn.disabled = false;
+        matchBtn.disabled = false;
+        exportBtn.disabled = false;
+        tagBtn.disabled = !canTag();
+        stopBtn.disabled = true;
+        return;
+      }
+      if (csvRows.length > 0) {
+        // 没有运行中任务但已有数据，显示默认就绪状态
+        setStatus('idle', '就绪');
+      }
+    });
+  }
 });
