@@ -250,7 +250,7 @@
     saveBtn.click();
     console.log('[clickSaveButton] 已点击保存按钮');
 
-    const record = await waitForUpdateRecord(300);
+    const record = await waitForUpdateRecord(30000);
     if (!record) {
       return { success: false, error: '未捕获到 ArticleDetailsUpdate 接口' };
     }

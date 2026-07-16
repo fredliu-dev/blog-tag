@@ -52,8 +52,8 @@
         const url = typeof input === 'string' ? input : input.url || input.toString();
 
         const response = await originalFetch.apply(this, args);
-
         if (shouldCapture(url)) {
+          console.log(url, response);
           try {
             const data = await parseBody(response);
             sendToContentScript({
