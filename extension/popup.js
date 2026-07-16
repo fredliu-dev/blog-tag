@@ -554,6 +554,8 @@ document.addEventListener('DOMContentLoaded', () => {
       iconUrl: 'icons/icon128.png',
       title: '处理 CSV 完成',
       message: `共处理 ${csvRows.length} 行数据，可以进行匹配 ID 了`,
+    }, (notificationId) => {
+      console.log('[popup] 处理 CSV 完成通知已创建', notificationId, chrome.runtime.lastError);
     });
     processBtn.disabled = false;
     matchBtn.disabled = false;

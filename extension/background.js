@@ -374,6 +374,8 @@ async function startMatchingProcess() {
     iconUrl: 'icons/icon128.png',
     title: '匹配完成',
     message: 'Shopify ID 匹配已完成，可以导出 CSV 了',
+  }, (notificationId) => {
+    console.log('[background] 匹配完成通知已创建', notificationId, chrome.runtime.lastError);
   });
 }
 
@@ -565,6 +567,9 @@ async function startTaggingProcess() {
       const result = await chrome.tabs.sendMessage(tagging.tabId, { type: 'TAG_ROW', row });
       console.log('[startTaggingProcess] tag result', result, 'for row', row);
 
+      // 等待 1 秒，避免 Shopify 的 beforeunload 弹窗
+      await sleep(1000);
+
       if (result && result.success) {
         tagging.results[i] = 'success';
         tagging.message = `已处理：文章 ${row.id}`;
@@ -601,6 +606,8 @@ async function startTaggingProcess() {
     iconUrl: 'icons/icon128.png',
     title: '打标签完成',
     message: 'Shopify 文章标签处理已完成',
+  }, (notificationId) => {
+    console.log('[background] 打标签完成通知已创建', notificationId, chrome.runtime.lastError);
   });
 }
 

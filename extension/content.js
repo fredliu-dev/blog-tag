@@ -62,7 +62,7 @@
     if (msg.type !== 'API_CAPTURE_RECORD') return;
 
     const record = msg.record;
-    chrome.runtime.sendMessage({ type: 'CAPTURE_RECORD', record }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'CAPTURE_RECORD', record }).catch(() => { });
   });
 
   // 监听 background / popup 发来的指令
@@ -71,6 +71,7 @@
 
     if (message.type === 'EXECUTE_CLICK_NEXT_BUTTON') {
       handleClickNext(safeSendResponse).catch((err) => {
+        console.error('[onMessage] EXECUTE_CLICK_NEXT_BUTTON error', err);
         safeSendResponse({ success: false, error: err?.message || '未知错误', isDisabled: true });
       });
       return true;
@@ -78,6 +79,7 @@
 
     if (message.type === 'TAG_ROW') {
       handleTagRow(message.row, safeSendResponse).catch((err) => {
+        console.error('[onMessage] TAG_ROW error', err);
         safeSendResponse({ success: false, error: err?.message || '未知错误' });
       });
       return true;
@@ -101,6 +103,7 @@
     const selectors = config.selectors || {};
     try {
       const buttons = document.querySelectorAll(selectors.nextPageButton || '.Polaris-ButtonGroup__Item');
+      console.log('[EXECUTE_CLICK_NEXT_BUTTON] found buttons count=', buttons.length);
       if (buttons.length < 2) {
         sendResponse({ success: false, error: '未找到翻页按钮', isDisabled: true });
         return;
@@ -109,6 +112,7 @@
       const secondButton = buttons[1];
       const innerButton = secondButton.querySelector('button');
       const isDisabled = innerButton ? innerButton.getAttribute('aria-disabled') === 'true' : false;
+      console.log('[EXECUTE_CLICK_NEXT_BUTTON] innerButton=', innerButton, 'isDisabled=', isDisabled);
 
       if (isDisabled) {
         sendResponse({ success: false, error: '翻页按钮已禁用', isDisabled: true });
@@ -117,20 +121,26 @@
 
       if (innerButton) {
         innerButton.click();
+        console.log('[EXECUTE_CLICK_NEXT_BUTTON] clicked innerButton');
       } else {
         secondButton.click();
+        console.log('[EXECUTE_CLICK_NEXT_BUTTON] clicked secondButton wrapper');
       }
       sendResponse({ success: true, isDisabled: false });
     } catch (err) {
+      console.error('[EXECUTE_CLICK_NEXT_BUTTON] error', err);
       sendResponse({ success: false, error: err.message, isDisabled: true });
     }
   }
 
   async function handleTagRow(row, sendResponse) {
     try {
+      console.log('[handleTagRow] start row=', row);
       const result = await tagRow(row);
+      console.log('[handleTagRow] success result=', result);
       sendResponse({ success: true, result });
     } catch (err) {
+      console.error('[handleTagRow] error', err);
       sendResponse({ success: false, error: err.message });
     }
   }
@@ -141,29 +151,42 @@
     const normalizedChangeType = (changeType || '').trim();
     const shouldReplace = normalizedChangeType.toLowerCase() === '替换' || normalizedChangeType.toLowerCase() === 'replace';
 
+    console.log('[tagRow] id=', id, 'changeType=', changeType, 'shouldReplace=', shouldReplace, 'tags=', tags);
+
     await waitForTagsStable();
     const beforeTags = readExistingTags();
+    console.log('[tagRow] beforeTags=', beforeTags);
 
     if (shouldReplace) {
       const tagsToRemove = beforeTags.filter((tag) => !tags.includes(tag));
       const tagsToAdd = tags.filter((tag) => !beforeTags.includes(tag));
+
+      console.log('[tagRow] replace mode tagsToRemove=', tagsToRemove, 'tagsToAdd=', tagsToAdd);
 
       if (tagsToRemove.length === 0 && tagsToAdd.length === 0) {
         return { success: true, action: 'skipped', beforeTags, afterTags: beforeTags, reason: '标签无需修改' };
       }
 
       if (tagsToRemove.length > 0) {
+        console.log('[tagRow] start removeSpecificTags');
         await removeSpecificTags(tagsToRemove);
+        console.log('[tagRow] end removeSpecificTags');
       }
 
       const addedTags = [];
       for (const tag of tagsToAdd) {
+        console.log('[tagRow] start inputTag tag=', tag);
         const ok = await inputTag(tag);
+        console.log('[tagRow] end inputTag tag=', tag, 'ok=', ok);
         if (ok) addedTags.push(tag);
       }
 
       const afterTags = readExistingTags();
+      console.log('[tagRow] afterTags=', afterTags);
+
+      console.log('[tagRow] start clickSaveButton');
       const saveResult = await clickSaveButton();
+      console.log('[tagRow] saveResult=', saveResult);
       if (!saveResult.success) {
         return { success: false, action: 'replace', beforeTags, afterTags, addedTags, error: saveResult.error };
       }
@@ -178,18 +201,26 @@
     } else {
       const tagsToAdd = tags.filter((tag) => !beforeTags.includes(tag));
 
+      console.log('[tagRow] add mode tagsToAdd=', tagsToAdd);
+
       if (tagsToAdd.length === 0) {
         return { success: true, action: 'skipped', beforeTags, afterTags: beforeTags, reason: '所有标签已存在' };
       }
 
       const addedTags = [];
       for (const tag of tagsToAdd) {
+        console.log('[tagRow] start inputTag tag=', tag);
         const ok = await inputTag(tag);
+        console.log('[tagRow] end inputTag tag=', tag, 'ok=', ok);
         if (ok) addedTags.push(tag);
       }
 
       const afterTags = readExistingTags();
+      console.log('[tagRow] afterTags=', afterTags);
+
+      console.log('[tagRow] start clickSaveButton');
       const saveResult = await clickSaveButton();
+      console.log('[tagRow] saveResult=', saveResult);
       if (!saveResult.success) {
         return { success: false, action: 'add', beforeTags, afterTags, addedTags, error: saveResult.error };
       }
@@ -207,17 +238,63 @@
   async function clickSaveButton() {
     const config = await getConfig();
     const selectors = config.selectors || {};
-    const saveBtn = document.querySelector(selectors.saveButton || '._ContextualButton_10jvh_1._Primary_10jvh_28');
-    if (!saveBtn) {
-      console.log('[clickSaveButton] 未找到保存按钮');
-      return { success: false, error: '未找到保存按钮' };
+    let loopCount = 0;
+    let saveBtn = document.querySelector(selectors.saveButton || '._ContextualButton_10jvh_1._Primary_10jvh_28');
+    while (!saveBtn && loopCount < 3) {
+      saveBtn = document.querySelector(selectors.saveButton || '._ContextualButton_10jvh_1._Primary_10jvh_28');
+      loopCount++;
+    }
+    if (loopCount >= 3 && !saveBtn) {
+      return { success: false, error: '未找到保存按钮，3次尝试均失败' };
     }
     saveBtn.click();
-    console.log('[clickSaveButton] 已点击保存按钮，请求 background 等待 ArticleDetailsUpdate 接口...');
+    console.log('[clickSaveButton] 已点击保存按钮');
 
-    const result = await chrome.runtime.sendMessage({ type: 'WAIT_FOR_ARTICLE_DETAILS_UPDATE', timeout: 30000 });
-    console.log('[clickSaveButton] background 返回接口结果', result);
-    return result || { success: false, error: '未收到 background 响应' };
+    const record = await waitForUpdateRecord(300);
+    if (!record) {
+      return { success: false, error: '未捕获到 ArticleDetailsUpdate 接口' };
+    }
+
+    const status = record.status || 0;
+    const hasError = hasGraphQLError(record.data);
+    console.log('[clickSaveButton] ArticleDetailsUpdate status=', status, 'hasError=', hasError);
+
+    if (status >= 200 && status < 300 && !hasError) {
+      return { success: true, record };
+    }
+    return { success: false, error: `更新失败：HTTP ${status}${hasError ? '，GraphQL 返回错误' : ''}`, record };
+  }
+
+  function waitForUpdateRecord(timeoutMs = 30000) {
+    return new Promise((resolve) => {
+      let resolved = false;
+      const handler = (event) => {
+        if (event.source !== window) return;
+        const msg = event.data || {};
+        if (msg.type !== 'API_CAPTURE_RECORD') return;
+        const record = msg.record || {};
+        const url = record.url || '';
+        if (url.includes('admin.shopify.com/api/operations') && url.includes('ArticleDetailsUpdate')) {
+          window.removeEventListener('message', handler);
+          resolved = true;
+          resolve(record);
+        }
+      };
+      window.addEventListener('message', handler);
+      setTimeout(() => {
+        if (!resolved) {
+          window.removeEventListener('message', handler);
+          resolve(null);
+        }
+      }, timeoutMs);
+    });
+  }
+
+  function hasGraphQLError(data) {
+    if (!data) return false;
+    if (Array.isArray(data.errors) && data.errors.length > 0) return true;
+    if (data.data && Array.isArray(data.data.errors) && data.data.errors.length > 0) return true;
+    return false;
   }
 
   function readExistingTags() {
@@ -233,14 +310,17 @@
       const elements = document.querySelectorAll(sel);
       const tags = Array.from(elements).map((el) => el.textContent.trim()).filter(Boolean);
       if (tags.length > 0) {
+        console.log('[readExistingTags] selector=', sel, 'tags=', tags);
         return tags;
       }
     }
+    console.log('[readExistingTags] no tags found');
     return [];
   }
 
   async function removeAllExistingTags() {
     const buttons = findTagRemoveButtons();
+    console.log('[removeAllExistingTags] found buttons count=', buttons.length);
     for (const btn of Array.from(buttons)) {
       btn.click();
       await waitFor(50);
@@ -250,22 +330,29 @@
   }
 
   async function removeSpecificTags(tagsToRemove) {
+    console.log('[removeSpecificTags] tagsToRemove=', tagsToRemove);
     let maxAttempts = 30;
     while (maxAttempts-- > 0) {
       const buttons = findTagRemoveButtons();
+      console.log('[removeSpecificTags] attempt', 30 - maxAttempts, 'buttons count=', buttons.length);
       if (buttons.length === 0) break;
 
       let clicked = false;
       for (const btn of buttons) {
         const tagText = getTagTextFromButton(btn);
+        console.log('[removeSpecificTags] button tagText=', tagText);
         if (tagsToRemove.includes(tagText)) {
           btn.click();
           clicked = true;
+          console.log('[removeSpecificTags] clicked tag=', tagText);
           await waitFor(150);
           break;
         }
       }
-      if (!clicked) break;
+      if (!clicked) {
+        console.log('[removeSpecificTags] no more matching tags to remove');
+        break;
+      }
     }
     // 等待标签 DOM 移除
     await waitFor(500);
@@ -288,6 +375,7 @@
     ].filter(Boolean);
     for (const sel of selectorList) {
       const buttons = document.querySelectorAll(sel);
+      console.log('[findTagRemoveButtons] selector=', sel, 'count=', buttons.length);
       if (buttons.length > 0) {
         return Array.from(buttons);
       }
@@ -298,7 +386,7 @@
   function getTagTextFromButton(button) {
     const config = configCache || {};
     const selectors = config.selectors || {};
-    const wrapperSelector = selectors.tagWrapper || '[class*="Polaris-Tag"]'; 
+    const wrapperSelector = selectors.tagWrapper || '[class*="Polaris-Tag"]';
     const tagWrapper = button.closest(wrapperSelector);
     if (tagWrapper) {
       const textSelectorList = [
@@ -311,7 +399,10 @@
         const tagTextEl = tagWrapper.querySelector(sel);
         if (tagTextEl) {
           const text = tagTextEl.textContent.trim();
-          if (text) return text;
+          if (text) {
+            console.log('[getTagTextFromButton] wrapper selector=', wrapperSelector, 'text selector=', sel, 'text=', text);
+            return text;
+          }
         }
       }
     }
@@ -319,12 +410,16 @@
     const parent = button.parentElement;
     if (parent) {
       const childText = Array.from(parent.childNodes)
-        .filter((n) => n.nodeType === Node.TEXT_NODE || n.nodeType === Element_NODE)
+        .filter((n) => n.nodeType === Node.TEXT_NODE || n.nodeType === Node.ELEMENT_NODE)
         .map((n) => n.textContent || '')
         .join('')
         .trim();
-      if (childText) return childText;
+      if (childText) {
+        console.log('[getTagTextFromButton] parent text=', childText);
+        return childText;
+      }
     }
+    console.log('[getTagTextFromButton] no text found');
     return '';
   }
 
@@ -384,6 +479,7 @@
       .filter(Boolean)
       .join(', ') || '.Polaris-Tag__Button.Polaris-Tag__Icon, [class*="Polaris-Tag__Button"], [class*="Polaris-Tag__Icon"]';
     const el = await waitForElementWithInterval(selector, 1000, 10);
+    console.log('[waitForAnyTagRemoveButton] found=', !!el);
     return el;
   }
 
@@ -429,9 +525,11 @@
     let stableCount = 0;
     for (let i = 0; i < 30; i++) {
       const currentTags = readExistingTags();
+      console.log('[waitForTagsStable] attempt', i, 'readyState=', document.readyState, 'tags=', currentTags);
       if (JSON.stringify(currentTags) === JSON.stringify(lastTags)) {
         stableCount++;
         if (stableCount >= 3) {
+          console.log('[waitForTagsStable] tags stable');
           return;
         }
       } else {
@@ -440,6 +538,7 @@
       lastTags = currentTags;
       await waitFor(300);
     }
+    console.log('[waitForTagsStable] timeout, use lastTags=', lastTags);
   }
 
   // 注入后立即应用配置文件
