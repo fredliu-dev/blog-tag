@@ -4,9 +4,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const fileCard = document.getElementById('fileCard');
   const fileNameEl = document.getElementById('fileName');
   const removeFileBtn = document.getElementById('removeFile');
-  const processBtn = document.getElementById('process');
   const matchBtn = document.getElementById('match');
   const exportBtn = document.getElementById('export');
+  const parallelSelect = document.getElementById('parallelCount');
   const tagBtn = document.getElementById('tag');
   const stopBtn = document.getElementById('stop');
   const progressContainer = document.getElementById('progressContainer');
@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const progressText = document.getElementById('progressText');
   const statusStepEl = document.getElementById('statusStep');
   const statusTitleEl = document.getElementById('statusTitle');
+  const workerListEl = document.getElementById('workerList');
 
   let originalFileName = '';
   let originalFileContent = '';
@@ -22,7 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let isProcessed = false;
   let popupCurrentAction = '';
   let statusTimer = null;
-  let extensionConfig = { defaultChangeType: '替换' };
+  let extensionConfig = { defaultChangeType: '替换', maxParallelTabs: 4 };
+  let parallelCount = 1;
 
   async function loadExtensionConfig() {
     try {
@@ -31,10 +33,25 @@ document.addEventListener('DOMContentLoaded', () => {
       const config = await res.json();
       extensionConfig = {
         defaultChangeType: config.defaultChangeType || '替换',
+        maxParallelTabs: Math.max(1, Math.min(4, config.maxParallelTabs || 4)),
       };
+      updateParallelSelectOptions();
     } catch {
-      extensionConfig = { defaultChangeType: '替换' };
+      extensionConfig = { defaultChangeType: '替换', maxParallelTabs: 4 };
+      updateParallelSelectOptions();
     }
+  }
+
+  function updateParallelSelectOptions() {
+    const max = extensionConfig.maxParallelTabs || 4;
+    parallelSelect.innerHTML = '';
+    for (let i = 1; i <= max; i++) {
+      const option = document.createElement('option');
+      option.value = String(i);
+      option.textContent = `${i} 个标签页`;
+      parallelSelect.appendChild(option);
+    }
+    parallelSelect.value = String(Math.min(parallelCount, max));
   }
 
   function savePopupState() {
@@ -45,6 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
       popupCsvRows: csvRows,
       popupIsProcessed: isProcessed,
       popupCurrentAction,
+      popupParallelCount: parallelCount,
     });
   }
 
@@ -80,21 +98,25 @@ document.addEventListener('DOMContentLoaded', () => {
       'popupCsvRows',
       'popupIsProcessed',
       'popupCurrentAction',
+      'popupParallelCount',
     ]);
     if (stored.popupOriginalFileName && stored.popupOriginalFileContent) {
       originalFileName = stored.popupOriginalFileName;
       originalFileContent = stored.popupOriginalFileContent;
-      processBtn.disabled = false;
       showFileCard(originalFileName);
     }
     if (stored.popupCsvHeaders && stored.popupCsvRows) {
       csvHeaders = stored.popupCsvHeaders;
       csvRows = stored.popupCsvRows;
       isProcessed = !!stored.popupIsProcessed;
-      matchBtn.disabled = false;
       exportBtn.disabled = !isProcessed;
       tagBtn.disabled = !canTag();
+      parallelSelect.disabled = !canTag();
       // 静默恢复，不覆盖状态提示
+    }
+    if (stored.popupParallelCount) {
+      parallelCount = Math.max(1, Math.min(extensionConfig.maxParallelTabs, Number(stored.popupParallelCount) || 1));
+      parallelSelect.value = String(parallelCount);
     }
     return stored.popupCurrentAction || '';
   }
@@ -213,7 +235,6 @@ document.addEventListener('DOMContentLoaded', () => {
     fileNameEl.textContent = '';
 
     matchBtn.disabled = true;
-    processBtn.disabled = true;
     exportBtn.disabled = true;
     tagBtn.disabled = true;
     stopBtn.disabled = true;
@@ -230,6 +251,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fileCard.style.display = 'flex';
     exportBtn.disabled = !isProcessed;
     tagBtn.disabled = !canTag();
+    parallelSelect.disabled = !canTag();
     progressContainer.style.display = 'none';
   }
 
@@ -237,6 +259,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const idIndex = getColumnIndex('id');
     const tagIndex = getColumnIndex('标签');
     return isProcessed && idIndex !== -1 && tagIndex !== -1 && csvRows.length > 0;
+  }
+
+  function canSplit(parallel) {
+    return csvRows.length >= parallel;
+  }
+
+  function splitRows(rows, count) {
+    const chunks = Array.from({ length: count }, () => []);
+    rows.forEach((row, i) => {
+      chunks[i % count].push(row);
+    });
+    return chunks;
   }
 
   function setStatus(step, title) {
@@ -248,12 +282,39 @@ document.addEventListener('DOMContentLoaded', () => {
       success: '捕获成功',
       process: '处理数据',
       done: '完成',
+      retry: '重试',
       'process-csv': '处理 CSV',
       'match-id': '匹配 ID',
       tagging: '打标签',
     };
     statusStepEl.textContent = stepLabels[step] || '就绪';
     statusTitleEl.textContent = title || '';
+  }
+
+  function updateWorkerMessages(messages = []) {
+    if (!workerListEl) return;
+    workerListEl.innerHTML = '';
+    if (!Array.isArray(messages) || messages.length === 0) return;
+    messages.forEach((msg) => {
+      const text = typeof msg === 'string' ? msg : msg.message;
+      const progress = typeof msg === 'object' ? msg.progress : '';
+
+      const el = document.createElement('div');
+      el.className = 'worker-item';
+
+      const spanText = document.createElement('span');
+      spanText.textContent = text;
+      el.appendChild(spanText);
+
+      if (progress) {
+        const spanProgress = document.createElement('span');
+        spanProgress.className = 'worker-progress';
+        spanProgress.textContent = progress;
+        el.appendChild(spanProgress);
+      }
+
+      workerListEl.appendChild(el);
+    });
   }
 
   function updateProgress(current, total, results = []) {
@@ -324,7 +385,6 @@ document.addEventListener('DOMContentLoaded', () => {
         matchBtn.disabled = false;
         stopBtn.disabled = true;
         exportBtn.disabled = false;
-        processBtn.disabled = false;
         tagBtn.disabled = !canTag();
       }
     }, 500);
@@ -342,6 +402,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (status.total > 0) {
         updateProgress(status.currentIndex, status.total, status.results || []);
       }
+      if (Array.isArray(status.workerMessages) && status.workerMessages.length > 0) {
+        updateWorkerMessages(status.workerMessages);
+      }
       if (!status.isRunning) {
         stopStatusPolling();
         popupCurrentAction = '';
@@ -350,6 +413,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const result = await chrome.runtime.sendMessage({ type: 'GET_TAGGING_RESULT' });
         console.log('[startTaggingStatusPolling] result=', result);
         if (result && result.rows) {
+          ensureTagResultColumns();
           const beforeIndex = getColumnIndex('打标前 tag');
           const afterIndex = getColumnIndex('打标后 tag');
           const statusIndex = getColumnIndex('打标情况');
@@ -377,7 +441,6 @@ document.addEventListener('DOMContentLoaded', () => {
           console.log('[startTaggingStatusPolling] savePopupState done');
         }
 
-        processBtn.disabled = false;
         matchBtn.disabled = false;
         exportBtn.disabled = false;
         tagBtn.disabled = !canTag();
@@ -413,36 +476,16 @@ document.addEventListener('DOMContentLoaded', () => {
       csvHeaders = parsed.headers;
       csvRows = parsed.rows;
 
-      processBtn.disabled = false;
       exportBtn.disabled = true;
       showFileCard(file.name);
-      setStatus('process-csv', '文件已选择，点击“处理 CSV”开始处理');
+      setStatus('idle', '文件已选择，点击“匹配 ID”开始匹配');
       savePopupState();
 
-      // 校验是否包含 blog_title 和 Title 列，决定是否启用匹配 ID
-      const hasBlogTitle = getColumnIndex('blog_title') !== -1;
-      const hasTitle = getColumnIndex('Title') !== -1;
-      matchBtn.disabled = !(hasBlogTitle && hasTitle && csvRows.length > 0);
+      // 只要有数据就启用匹配 ID 按钮
+      matchBtn.disabled = !(csvRows.length > 0);
 
-      // 如果有 URL 列，自动处理
-      const urlIndex = getColumnIndex('URL');
-      if (urlIndex !== -1) {
-        progressContainer.style.display = 'block';
-        setStatus('process-csv', '正在读取 CSV...');
-        popupCurrentAction = 'process-csv';
-        savePopupState();
-        const ok = await processCSV();
-        popupCurrentAction = '';
-        savePopupState();
-        if (ok) {
-          isProcessed = true;
-          setStatus('process-csv', `处理完成：共 ${csvRows.length} 行数据`);
-        }
-        progressContainer.style.display = 'none';
-      }
-
-      exportBtn.disabled = !isProcessed;
       tagBtn.disabled = !canTag();
+      parallelSelect.disabled = !canTag();
     } else {
       resetState();
     }
@@ -455,132 +498,20 @@ document.addEventListener('DOMContentLoaded', () => {
     resetState();
   });
 
-  async function processCSV() {
-    const parsed = parseCSV(originalFileContent);
-    csvHeaders = parsed.headers;
-    csvRows = parsed.rows;
-
-    const urlIndex = getColumnIndex('URL');
-    if (urlIndex === -1) {
-      setStatus('idle', '未找到 URL 列');
-      return false;
-    }
-
-    // 只保留标题非空的列
-    const validIndexes = csvHeaders
-      .map((h, i) => ({ h, i }))
-      .filter(({ h }) => h.trim() !== '')
-      .map(({ i }) => i);
-
-    csvHeaders = validIndexes.map((i) => csvHeaders[i]);
-    for (let i = 0; i < csvRows.length; i++) {
-      csvRows[i] = validIndexes.map((idx) => csvRows[i][idx] || '');
-    }
-
-    // 重新计算 URL 索引，并插入 blog_title / Title
-    const newUrlIndex = csvHeaders.findIndex((h) => h.trim().toLowerCase() === 'url');
-    let blogTitleIndex = getColumnIndex('blog_title');
-    let titleIndex = getColumnIndex('Title');
-    if (blogTitleIndex === -1 || titleIndex === -1) {
-      csvHeaders.splice(newUrlIndex + 1, 0, 'blog_title', 'Title');
-      blogTitleIndex = newUrlIndex + 1;
-      titleIndex = newUrlIndex + 2;
-      for (let i = 0; i < csvRows.length; i++) {
-        csvRows[i].splice(newUrlIndex + 1, 0, '', '');
-      }
-    }
-
-    // 确保存在“修改类型”列，不存在则添加并填充默认值
-    let changeTypeIndex = getColumnIndex('修改类型');
-    if (changeTypeIndex === -1) {
-      csvHeaders.push('修改类型');
-      changeTypeIndex = csvHeaders.length - 1;
-      for (let i = 0; i < csvRows.length; i++) {
-        csvRows[i].push(extensionConfig.defaultChangeType);
-      }
-    }
-
-    const total = csvRows.length;
-    for (let i = 0; i < total; i++) {
-      const row = csvRows[i];
-      const url = row[newUrlIndex] || '';
-      let blogTitle = '';
-      let title = '';
-      try {
-        const pathname = new URL(url).pathname.replace(/\/$/, '');
-        const segments = pathname.split('/').filter(Boolean);
-        const last = segments[segments.length - 1] || '';
-        const secondLast = segments[segments.length - 2] || '';
-        blogTitle = toTitleCase(secondLast);
-        title = last;
-      } catch (e) { }
-      row[blogTitleIndex] = blogTitle;
-      row[titleIndex] = title;
-      updateProgress(i + 1, total);
-      setStatus('process-csv', `正在处理：${title || url}`);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-
-    return true;
-  }
-
-  processBtn.addEventListener('click', async () => {
-    if (!originalFileContent) {
-      setStatus('idle', '请先选择 CSV 文件');
-      return;
-    }
-
-    processBtn.disabled = true;
-    exportBtn.disabled = true;
-    progressContainer.style.display = 'block';
-    setStatus('process-csv', '正在读取 CSV...');
-    popupCurrentAction = 'process-csv';
-    savePopupState();
-
-    const ok = await processCSV();
-    if (!ok) {
-      popupCurrentAction = '';
-      savePopupState();
-      processBtn.disabled = false;
-      progressContainer.style.display = 'none';
-      return;
-    }
-
-    isProcessed = true;
-    popupCurrentAction = '';
-    savePopupState();
-    await chrome.runtime.sendMessage({
-      type: 'SET_MATCHING_RESULT',
-      csvHeaders,
-      csvRows,
-    });
-    setStatus('process-csv', `处理完成：共 ${csvRows.length} 行数据`);
-    chrome.notifications.create('process-csv-done', {
-      type: 'basic',
-      iconUrl: 'icons/icon128.png',
-      title: '处理 CSV 完成',
-      message: `共处理 ${csvRows.length} 行数据，可以进行匹配 ID 了`,
-    }, (notificationId) => {
-      console.log('[popup] 处理 CSV 完成通知已创建', notificationId, chrome.runtime.lastError);
-    });
-    processBtn.disabled = false;
-    matchBtn.disabled = false;
-    exportBtn.disabled = false;
-    tagBtn.disabled = !canTag();
-  });
-
   matchBtn.addEventListener('click', async () => {
     if (csvRows.length === 0) return;
 
     const hasUrl = getColumnIndex('URL') !== -1;
-    const hasBlogTitle = getColumnIndex('blog_title') !== -1;
-    const hasTitle = getColumnIndex('Title') !== -1;
-    if (!hasUrl || !hasBlogTitle || !hasTitle) {
-      alert('请先处理 CSV，确保包含 URL、blog_title 和 Title 三列');
+    const hasTag = getColumnIndex('标签') !== -1;
+    if (!hasUrl) {
+      alert('CSV 中需要包含 URL 列用于匹配 ID');
+      return;
+    }
+    if (!hasTag) {
+      alert('CSV 中需要包含 标签 列用于打标签');
       return;
     }
 
-    processBtn.disabled = true;
     exportBtn.disabled = true;
     stopBtn.disabled = false;
     setStatus('match-id', '开始匹配...');
@@ -602,11 +533,12 @@ document.addEventListener('DOMContentLoaded', () => {
     stopStatusPolling();
     popupCurrentAction = '';
     savePopupState();
-    processBtn.disabled = false;
     matchBtn.disabled = false;
     exportBtn.disabled = !isProcessed;
     tagBtn.disabled = !canTag();
+    parallelSelect.disabled = !canTag();
     stopBtn.disabled = true;
+    updateWorkerMessages([]);
     setStatus('idle', '已停止');
   });
 
@@ -641,10 +573,18 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    processBtn.disabled = true;
+    const parallel = Math.max(1, Math.min(extensionConfig.maxParallelTabs, Number(parallelSelect.value) || 1));
+    if (!canSplit(parallel)) {
+      alert(`数据量 ${tagRows.length} 条不足以拆分到 ${parallel} 个标签页，请减少并行数`);
+      return;
+    }
+
+    const chunks = splitRows(tagRows, parallel);
+    parallelCount = parallel;
     matchBtn.disabled = true;
     exportBtn.disabled = true;
     tagBtn.disabled = true;
+    parallelSelect.disabled = true;
     stopBtn.disabled = false;
     setStatus('tagging', '开始打标签...');
     popupCurrentAction = 'tagging';
@@ -652,7 +592,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     await chrome.runtime.sendMessage({
       type: 'START_TAGGING',
-      rows: tagRows,
+      parallel,
+      chunks,
     });
 
     startTaggingStatusPolling();
@@ -660,6 +601,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   exportBtn.addEventListener('click', async () => {
     if (!csvHeaders.length || !csvRows.length) return;
+    console.log('[export] headers=', csvHeaders, 'rows sample=', csvRows.slice(0, 2));
     const csv = serializeCSV(csvHeaders, csvRows);
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -681,41 +623,9 @@ document.addEventListener('DOMContentLoaded', () => {
       popupCurrentAction = action;
       stopBtn.disabled = true;
 
-      if (popupCurrentAction === 'process-csv') {
-        processBtn.disabled = true;
-        exportBtn.disabled = true;
-        progressContainer.style.display = 'block';
-        setStatus('process-csv', '正在恢复处理 CSV...');
-        (async () => {
-          const ok = await processCSV();
-          if (!ok) {
-            popupCurrentAction = '';
-            savePopupState();
-            processBtn.disabled = false;
-            progressContainer.style.display = 'none';
-            return;
-          }
-          isProcessed = true;
-          popupCurrentAction = '';
-          savePopupState();
-          await chrome.runtime.sendMessage({
-            type: 'SET_MATCHING_RESULT',
-            csvHeaders,
-            csvRows,
-          });
-          setStatus('process-csv', `处理完成：共 ${csvRows.length} 行数据`);
-          processBtn.disabled = false;
-          matchBtn.disabled = false;
-          exportBtn.disabled = false;
-          tagBtn.disabled = !canTag();
-        })();
-        return;
-      }
-
       chrome.runtime.sendMessage({ type: 'GET_MATCHING_STATUS' }).then((status) => {
         console.log('[loadPopupState] matching status=', status);
         if (status && status.isRunning) {
-          processBtn.disabled = true;
           exportBtn.disabled = true;
           stopBtn.disabled = false;
           popupCurrentAction = 'match-id';
@@ -747,13 +657,16 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.runtime.sendMessage({ type: 'GET_TAGGING_STATUS' }).then((tagStatus) => {
       console.log('[loadPopupState] tagging status=', tagStatus);
       if (tagStatus && tagStatus.isRunning) {
-        processBtn.disabled = true;
         matchBtn.disabled = true;
         exportBtn.disabled = true;
         tagBtn.disabled = true;
+        parallelSelect.disabled = true;
         stopBtn.disabled = false;
         popupCurrentAction = 'tagging';
         savePopupState();
+        if (Array.isArray(tagStatus.workerMessages) && tagStatus.workerMessages.length > 0) {
+          updateWorkerMessages(tagStatus.workerMessages);
+        }
         startTaggingStatusPolling();
         return;
       }
@@ -786,7 +699,6 @@ document.addEventListener('DOMContentLoaded', () => {
             savePopupState();
           }
           setStatus('done', '打标签完成');
-          processBtn.disabled = false;
           matchBtn.disabled = false;
           exportBtn.disabled = false;
           tagBtn.disabled = !canTag();
@@ -800,7 +712,6 @@ document.addEventListener('DOMContentLoaded', () => {
           updateProgress(matchingStatus.currentIndex, matchingStatus.total, matchingStatus.results || []);
         }
         setStatus('done', '匹配完成');
-        processBtn.disabled = false;
         matchBtn.disabled = false;
         exportBtn.disabled = false;
         tagBtn.disabled = !canTag();

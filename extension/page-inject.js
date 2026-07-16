@@ -21,6 +21,37 @@
     console.log('[API Capture] 配置更新:', { keywords: MATCH_KEYWORDS, listening: isListening });
   });
 
+  // 临时屏蔽 beforeunload 弹窗
+  let suppressBeforeUnload = false;
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const msg = event.data || {};
+    if (msg.type === 'SUPPRESS_BEFORE_UNLOAD') {
+      suppressBeforeUnload = true;
+      console.log('[API Capture] 临时屏蔽 beforeunload');
+      setTimeout(() => {
+        suppressBeforeUnload = false;
+        console.log('[API Capture] 恢复 beforeunload');
+      }, msg.duration || 3000);
+    }
+  });
+
+  const originalAddEventListener = window.addEventListener;
+  window.addEventListener = function (type, listener, options) {
+    if (type === 'beforeunload') {
+      const wrappedListener = function (event) {
+        if (suppressBeforeUnload) {
+          event.preventDefault = () => { };
+          event.returnValue = '';
+          return undefined;
+        }
+        return listener.apply(this, arguments);
+      };
+      return originalAddEventListener.call(this, type, wrappedListener, options);
+    }
+    return originalAddEventListener.apply(this, arguments);
+  };
+
   function sendToContentScript(record) {
     window.postMessage({ type: 'API_CAPTURE_RECORD', record }, '*');
   }

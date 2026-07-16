@@ -15,12 +15,19 @@ const state = {
   },
   tagging: {
     rows: [],
+    chunks: [],
     currentIndex: 0,
     isRunning: false,
     shouldStop: false,
     step: 'idle',
     message: '就绪',
     results: [], // 'success' | 'fail' | null
+    tabIds: [],
+    workerResults: {}, // { tabId: { success/fail count } }
+    workerProgress: {}, // { tabId: { workerIndex, currentRowId, message } }
+    tabRecords: {}, // { tabId: [record] }
+    completedWorkers: 0,
+    totalWorkers: 0,
     tabId: null,
   },
 };
@@ -57,10 +64,15 @@ function saveMatchingState() {
 function saveTaggingState() {
   chrome.storage.local.set({
     taggingRows: state.tagging.rows,
+    taggingChunks: state.tagging.chunks,
     taggingCurrentIndex: state.tagging.currentIndex,
     taggingStep: state.tagging.step,
     taggingMessage: state.tagging.message,
     taggingResults: state.tagging.results,
+    taggingTabIds: state.tagging.tabIds,
+    taggingWorkerProgress: state.tagging.workerProgress,
+    taggingCompletedWorkers: state.tagging.completedWorkers,
+    taggingTotalWorkers: state.tagging.totalWorkers,
     taggingTabId: state.tagging.tabId,
   });
   console.log('[saveTaggingState] rows=', state.tagging.rows.map((r) => ({ id: r.id, rowIndex: r.rowIndex, beforeTags: r.beforeTags, afterTags: r.afterTags, status: r.status })));
@@ -79,21 +91,47 @@ function getMatchingStatus() {
 }
 
 function getTaggingStatus() {
+  const total = state.tagging.rows.length;
+  const workerMessages = Object.values(state.tagging.workerProgress || {})
+    .sort((a, b) => (a.workerIndex || 0) - (b.workerIndex || 0))
+    .map((p) => {
+      const progress = p.total > 0 ? `${p.success + p.fail}/${p.total}` : '';
+      return {
+        message: p.message || '准备中',
+        progress,
+      };
+    });
+
+  const done = state.tagging.results.filter((r) => r === 'success' || r === 'fail').length;
   return {
     isRunning: state.tagging.isRunning,
     step: state.tagging.step,
     message: state.tagging.message,
-    currentIndex: state.tagging.currentIndex,
-    total: state.tagging.rows.length,
+    currentIndex: done,
+    total,
     results: state.tagging.results,
+    tabIds: state.tagging.tabIds,
+    completedWorkers: state.tagging.completedWorkers,
+    totalWorkers: state.tagging.totalWorkers,
+    workerMessages,
   };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CAPTURE_RECORD') {
-    state.records.push(message.record);
-    state.latestRecord = message.record;
-    console.log('CAPTURE_RECORD', message.record);
+    const record = message.record || {};
+    const tabId = sender?.tab?.id;
+    state.records.push(record);
+    state.latestRecord = record;
+    if (tabId) {
+      if (!state.tagging.tabRecords[tabId]) {
+        state.tagging.tabRecords[tabId] = [];
+      }
+      state.tagging.tabRecords[tabId].push(record);
+      console.log('CAPTURE_RECORD', { tabId, queueSize: state.tagging.tabRecords[tabId].length, url: record.url });
+    } else {
+      console.log('CAPTURE_RECORD', record);
+    }
     sendResponse({ success: true });
     return true;
   }
@@ -225,13 +263,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'START_TAGGING') {
-    state.tagging.rows = message.rows || [];
+    const chunks = message.chunks || [];
+    const parallel = message.parallel || 1;
+    state.tagging.rows = chunks.flat();
+    state.tagging.chunks = chunks;
     state.tagging.currentIndex = 0;
     state.tagging.isRunning = true;
     state.tagging.shouldStop = false;
     state.tagging.step = 'idle';
     state.tagging.message = '开始打标签';
-    state.tagging.results = [];
+    state.tagging.results = new Array(state.tagging.rows.length).fill(null);
+    state.tagging.tabIds = [];
+    state.tagging.workerResults = {};
+    state.tagging.workerProgress = {};
+    state.tagging.tabRecords = {};
+    state.tagging.completedWorkers = 0;
+    state.tagging.totalWorkers = chunks.length;
     state.tagging.tabId = null;
     saveTaggingState();
     startTaggingProcess();
@@ -309,14 +356,45 @@ function toTitleCase(str) {
 async function startMatchingProcess() {
   startKeepAlive();
   const matching = state.matching;
+  const config = await getConfig();
+  const blogTitles = config.blogTitle || [];
+
+  if (!Array.isArray(blogTitles) || blogTitles.length === 0) {
+    matching.step = 'idle';
+    matching.message = '配置中未设置 blogTitle';
+    matching.isRunning = false;
+    saveMatchingState();
+    stopKeepAlive();
+    return;
+  }
+
   let idIndex = getColumnIndex(matching.csvHeaders, 'id');
   if (idIndex === -1) {
     matching.csvHeaders.push('id');
     idIndex = matching.csvHeaders.length - 1;
+    for (let i = 0; i < matching.csvRows.length; i++) {
+      matching.csvRows[i].push('');
+    }
   }
+
+  let changeTypeIndex = getColumnIndex(matching.csvHeaders, '修改类型');
+  if (changeTypeIndex === -1) {
+    matching.csvHeaders.push('修改类型');
+    changeTypeIndex = matching.csvHeaders.length - 1;
+    const defaultChangeType = config.defaultChangeType || '替换';
+    for (let i = 0; i < matching.csvRows.length; i++) {
+      matching.csvRows[i].push(defaultChangeType);
+    }
+  }
+
+  // 确保所有行长度与表头一致
+  for (let i = 0; i < matching.csvRows.length; i++) {
+    while (matching.csvRows[i].length < matching.csvHeaders.length) {
+      matching.csvRows[i].push('');
+    }
+  }
+
   const urlIndex = getColumnIndex(matching.csvHeaders, 'URL');
-  const blogTitleIndex = getColumnIndex(matching.csvHeaders, 'blog_title');
-  const titleIndex = getColumnIndex(matching.csvHeaders, 'Title');
   const total = matching.csvRows.length;
 
   let shopifyTab;
@@ -338,25 +416,27 @@ async function startMatchingProcess() {
     }
   }
 
-  // 按 blog_title 分组，只收集未匹配的记录索引
-  const groups = new Map();
+  // 所有未匹配的索引
+  let rowIndexes = [];
   for (let i = 0; i < total; i++) {
-    if (matching.results[i]) continue;
-    const row = matching.csvRows[i];
-    const blogTitle = row[blogTitleIndex] || '';
-    if (!groups.has(blogTitle)) {
-      groups.set(blogTitle, []);
+    if (!matching.csvRows[i][idIndex]) {
+      rowIndexes.push(i);
     }
-    groups.get(blogTitle).push(i);
   }
 
-  console.log('[startMatchingProcess] groups=', Array.from(groups.entries()).map(([k, v]) => `${k}(${v.length})`).join(', '));
+  console.log('[startMatchingProcess] blogTitles=', blogTitles, 'pendingRows=', rowIndexes.length);
 
-  for (const [blogTitle, rowIndexes] of groups) {
+  for (const blogTitle of blogTitles) {
+    console.log('[startMatchingProcess] blogTitle=', blogTitle);
     if (matching.shouldStop) break;
+    if (!blogTitle) continue;
+    if (rowIndexes.length === 0) {
+      console.log('[startMatchingProcess] all rows matched, stop iteration');
+      break;
+    }
 
     const pendingRows = rowIndexes.filter((i) => !matching.csvRows[i][idIndex]);
-    if (pendingRows.length === 0) continue;
+    if (pendingRows.length === 0) break;
 
     matching.step = 'capture';
     matching.currentTitle = blogTitle;
@@ -367,16 +447,11 @@ async function startMatchingProcess() {
     const allMatched = await matchRowsByBlogTitle(shopifyTab.id, blogTitle, pendingRows, idIndex, urlIndex);
     console.log('[matchRowsByBlogTitle] allMatched=', allMatched, 'blogTitle=', blogTitle, 'remaining=', pendingRows.length);
 
-    // 未匹配的记录标记为 fail
-    for (const i of pendingRows) {
-      if (!matching.csvRows[i][idIndex]) {
-        matching.results[i] = 'fail';
-      }
-    }
-    saveMatchingState();
+    // 更新剩余未匹配索引
+    rowIndexes = rowIndexes.filter((i) => !matching.csvRows[i][idIndex]);
   }
 
-  // 补齐剩余状态
+  // 补齐状态
   for (let i = 0; i < total; i++) {
     if (!matching.results[i]) {
       matching.results[i] = matching.csvRows[i][idIndex] ? 'success' : 'fail';
@@ -415,7 +490,7 @@ async function matchRowsByBlogTitle(tabId, blogTitle, rowIndexes, idIndex, urlIn
     state.matching.currentIndex = rowIndexes[0];
     saveMatchingState();
 
-    const records = await waitForApiRecords('matchArticleId', 30000);
+    const records = await waitForApiRecords('matchArticleId', tabId, 30000);
     const record = records.ArticleList;
     if (!record) return false;
 
@@ -551,6 +626,7 @@ async function loadConfig() {
     return {
       keywords: ['ArticleList', 'ArticleDetailsUpdate', 'ArticleDetails'],
       defaultChangeType: '替换',
+      blogTitle: ['Blog', 'Stories', 'Ambassadors', 'Events', 'Press', 'Support', 'Guides', 'Newsroom'],
       selectors: {},
       apiPatterns: {
         matchArticleId: { required: ['ArticleList'] },
@@ -573,7 +649,7 @@ function urlContainsKeyword(url, keyword) {
 }
 
 // 统一等待一组接口记录
-async function waitForApiRecords(patternName, timeoutMs = 30000) {
+async function waitForApiRecords(patternName, tabId, timeoutMs = 30000) {
   const config = await getConfig();
   const patterns = config.apiPatterns || {};
   const pattern = patterns[patternName];
@@ -584,13 +660,35 @@ async function waitForApiRecords(patternName, timeoutMs = 30000) {
   const required = pattern.required;
   const result = Object.fromEntries(required.map((key) => [key, null]));
 
-  console.log(`[waitForApiRecords] pattern=${patternName} required=${JSON.stringify(required)}`);
+  console.log(`[waitForApiRecords] pattern=${patternName} tabId=${tabId} required=${JSON.stringify(required)}`);
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const shouldStop = state.matching.shouldStop || state.tagging.shouldStop;
     if (shouldStop) return result;
 
-    if (state.latestRecord) {
+    const queue = tabId ? state.tagging.tabRecords[tabId] : [];
+    if (Array.isArray(queue) && queue.length > 0) {
+      while (queue.length > 0) {
+        const record = queue.shift();
+        const url = record.url || '';
+        if (url.includes('admin.shopify.com/api/operations')) {
+          for (const key of required) {
+            if (!result[key] && url.includes(key)) {
+              result[key] = record;
+              console.log(`[waitForApiRecords] tab=${tabId} 捕获 ${key}`);
+            }
+          }
+        }
+      }
+
+      if (required.every((key) => result[key])) {
+        console.log('[waitForApiRecords] 所有接口均已捕获');
+        return result;
+      }
+    }
+
+    // fallback: 单 tab 兼容模式
+    if (!tabId && state.latestRecord) {
       const url = state.latestRecord.url || '';
       if (url.includes('admin.shopify.com/api/operations')) {
         for (const key of required) {
@@ -607,6 +705,7 @@ async function waitForApiRecords(patternName, timeoutMs = 30000) {
         return result;
       }
     }
+
     await sleep(500);
   }
   console.log('[waitForApiRecords] 超时', result);
@@ -646,11 +745,13 @@ async function tryFillIdFromRecord(record, url, idIndex, row) {
   return false;
 }
 
-async function getOrCreateShopifyTab() {
-  const tabs = await chrome.tabs.query({ url: 'https://admin.shopify.com/store/aftershokz-com/*' });
-  if (tabs.length > 0) {
-    await chrome.tabs.update(tabs[0].id, { active: true });
-    return tabs[0];
+async function getOrCreateShopifyTab(createNew = false) {
+  if (!createNew) {
+    const tabs = await chrome.tabs.query({ url: 'https://admin.shopify.com/store/aftershokz-com/*' });
+    if (tabs.length > 0) {
+      await chrome.tabs.update(tabs[0].id, { active: true });
+      return tabs[0];
+    }
   }
   return new Promise((resolve) => {
     chrome.tabs.create({ url: 'https://admin.shopify.com/store/aftershokz-com/', active: true }, (tab) => resolve(tab));
@@ -659,31 +760,72 @@ async function getOrCreateShopifyTab() {
 
 function waitForTabLoad(tabId) {
   return new Promise((resolve) => {
+    let resolved = false;
     const listener = (updatedTabId, changeInfo) => {
       if (updatedTabId === tabId && changeInfo.status === 'complete') {
         chrome.tabs.onUpdated.removeListener(listener);
+        resolved = true;
         // Shopify 是 SPA，status complete 后 React 组件仍在初始化，多等一会儿
         setTimeout(resolve, 1500);
       }
     };
     chrome.tabs.onUpdated.addListener(listener);
-    setTimeout(() => {
+    const timeout = setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
       resolve();
     }, 10000);
+
+    const checkStop = setInterval(() => {
+      if (state.tagging.shouldStop && !resolved) {
+        clearInterval(checkStop);
+        clearTimeout(timeout);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    }, 500);
   });
 }
 
 async function startTaggingProcess() {
   startKeepAlive();
   const tagging = state.tagging;
-  const total = tagging.rows.length;
+  const chunks = tagging.chunks;
 
-  let shopifyTab;
-  try {
-    shopifyTab = await getOrCreateShopifyTab();
-    tagging.tabId = shopifyTab.id;
-  } catch (err) {
+  if (!chunks || chunks.length === 0) {
+    tagging.step = 'idle';
+    tagging.message = '没有可处理的标签数据';
+    tagging.isRunning = false;
+    saveTaggingState();
+    stopKeepAlive();
+    return;
+  }
+
+  // 创建并行 tab
+  const tabPromises = chunks.map(async (chunk, index) => {
+    try {
+      const tab = await getOrCreateShopifyTab(true);
+      tagging.tabIds.push(tab.id);
+      tagging.workerResults[tab.id] = { success: 0, fail: 0 };
+      tagging.workerProgress[tab.id] = {
+        workerIndex: index,
+        total: chunk.length,
+        success: 0,
+        fail: 0,
+        currentRowId: '',
+        message: `Worker ${index + 1} 准备中`,
+      };
+      tagging.tabRecords[tab.id] = [];
+      return { tabId: tab.id, chunk, index };
+    } catch (err) {
+      console.error('[startTaggingProcess] 创建 tab 失败', err);
+      return null;
+    }
+  });
+
+  const workers = (await Promise.all(tabPromises)).filter(Boolean);
+  tagging.totalWorkers = workers.length;
+
+  if (workers.length === 0) {
     tagging.step = 'idle';
     tagging.message = '无法创建 Shopify 标签页';
     tagging.isRunning = false;
@@ -692,50 +834,41 @@ async function startTaggingProcess() {
     return;
   }
 
-  for (let i = 0; i < total; i++) {
-    tagging.currentIndex = i;
-    if (tagging.shouldStop) break;
+  saveTaggingState();
 
-    const row = tagging.rows[i];
-    tagging.step = 'process';
-    tagging.message = `正在打标签：文章 ${row.id}`;
-    console.log('[startTaggingProcess] start row', i, 'id=', row.id, 'row=', row);
+  // 并行启动所有 worker，并收集各自的失败行
+  const workerResults = await Promise.all(workers.map((worker) => runTaggingWorker(worker.tabId, worker.chunk, worker.index)));
+
+  // 按原 worker 收集失败项，重试一次
+  let hasRetry = false;
+  for (let i = 0; i < workers.length; i++) {
+    const worker = workers[i];
+    const failedRows = workerResults[i] || [];
+    if (failedRows.length === 0 || tagging.shouldStop) continue;
+
+    hasRetry = true;
+    tagging.message = '正在重试失败的标签...';
+    tagging.step = 'retry';
     saveTaggingState();
 
-    const url = `https://admin.shopify.com/store/aftershokz-com/content/articles/${row.id}`;
-    try {
-      await chrome.tabs.update(tagging.tabId, { url });
-      await waitForTabLoad(tagging.tabId);
+    console.log(`[startTaggingProcess] worker ${worker.index + 1} retry ${failedRows.length} failed rows`);
 
-      console.log('[startTaggingProcess] send TAG_ROW to tab', tagging.tabId, 'row=', row);
-      const result = await chrome.tabs.sendMessage(tagging.tabId, { type: 'TAG_ROW', row });
-      console.log('[startTaggingProcess] tag result', result, 'for row', row);
-      console.log('[startTaggingProcess] tag result JSON', JSON.stringify(result, null, 2));
+    // 重置这些行的结果状态
+    failedRows.forEach((row) => {
+      tagging.results[row.rowIndex] = null;
+      row.status = '';
+    });
 
-      // 等待 3 秒，避免 Shopify 的 beforeunload 弹窗
-      await sleep(3000);
-
-      if (result && result.success) {
-        tagging.results[i] = 'success';
-        tagging.message = `已处理：文章 ${row.id}`;
-        row.beforeTags = result.beforeTags || [];
-        row.afterTags = result.afterTags || [];
-        row.status = '已打标';
-        console.log('[startTaggingProcess] success result row', i, 'rowIndex=', row.rowIndex, 'beforeTags=', row.beforeTags, 'afterTags=', row.afterTags);
-      } else {
-        tagging.results[i] = 'fail';
-        tagging.message = `处理失败：文章 ${row.id}，${result?.error || '未知错误'}`;
-        row.status = '未打标';
-        console.log('[startTaggingProcess] fail error=', result?.error, 'rowIndex=', row.rowIndex);
-      }
-    } catch (err) {
-      console.error('[startTaggingProcess] error', err);
-      tagging.results[i] = 'fail';
-      tagging.message = `处理失败：文章 ${row.id}，${err.message}`;
-      row.status = '未打标';
-    }
+    // 把重试数量加到该 worker 的 total
+    tagging.workerProgress[worker.tabId].total += failedRows.length;
+    tagging.workerProgress[worker.tabId].message = `Worker ${worker.index + 1} 准备重试`;
     saveTaggingState();
-    console.log('[startTaggingProcess] saved row', i, 'row=', row);
+
+    await runTaggingWorker(worker.tabId, failedRows, worker.index);
+  }
+
+  if (hasRetry) {
+    tagging.message = '正在重试失败的标签...';
   }
 
   tagging.step = 'done';
@@ -743,7 +876,6 @@ async function startTaggingProcess() {
   tagging.isRunning = false;
   tagging.currentIndex = 0;
   saveTaggingState();
-  console.log('[startTaggingProcess] done rows=', tagging.rows);
   stopKeepAlive();
 
   chrome.notifications.create('tagging-done', {
@@ -756,8 +888,91 @@ async function startTaggingProcess() {
   });
 }
 
+async function runTaggingWorker(tabId, chunk, workerIndex) {
+  const tagging = state.tagging;
+  const failedRows = [];
+  for (let i = 0; i < chunk.length; i++) {
+    if (tagging.shouldStop) break;
+
+    const row = chunk[i];
+    tagging.step = 'process';
+    tagging.message = '正在打标签...';
+    tagging.workerProgress[tabId] = {
+      workerIndex,
+      total: tagging.workerProgress[tabId].total,
+      success: tagging.workerResults[tabId].success,
+      fail: tagging.workerResults[tabId].fail,
+      currentRowId: row.id,
+      message: `Worker ${workerIndex + 1} 正在打标签：文章 ${row.id}`,
+    };
+    console.log(`[runTaggingWorker] worker=${workerIndex} tab=${tabId} start row`, i, 'id=', row.id, 'row=', row);
+    saveTaggingState();
+
+    const url = `https://admin.shopify.com/store/aftershokz-com/content/articles/${row.id}`;
+    try {
+      await chrome.tabs.update(tabId, { url });
+      await waitForTabLoad(tabId);
+
+      console.log('[runTaggingWorker] send TAG_ROW to tab', tabId, 'row=', row);
+      const result = await chrome.tabs.sendMessage(tabId, { type: 'TAG_ROW', row });
+      console.log('[runTaggingWorker] tag result', result, 'for row', row);
+
+      // 等待 500ms，让页面状态稳定后再跳转
+      await sleep(500);
+
+      if (result && result.success) {
+        tagging.results[row.rowIndex] = 'success';
+        tagging.message = '正在打标签...';
+        row.beforeTags = result.beforeTags || [];
+        row.afterTags = result.afterTags || [];
+        row.status = '已打标';
+        tagging.workerResults[tabId].success += 1;
+        tagging.workerProgress[tabId].success += 1;
+        console.log('[runTaggingWorker] success row', row.rowIndex, 'beforeTags=', row.beforeTags, 'afterTags=', row.afterTags);
+      } else {
+        tagging.results[row.rowIndex] = 'fail';
+        tagging.message = '正在打标签...';
+        row.status = '未打标';
+        tagging.workerResults[tabId].fail += 1;
+        tagging.workerProgress[tabId].fail += 1;
+        failedRows.push(row);
+        console.log('[runTaggingWorker] fail error=', result?.error, 'rowIndex=', row.rowIndex);
+      }
+    } catch (err) {
+      console.error('[runTaggingWorker] error', err);
+      tagging.results[row.rowIndex] = 'fail';
+      tagging.message = '正在打标签...';
+      row.status = '未打标';
+      tagging.workerResults[tabId].fail += 1;
+      tagging.workerProgress[tabId].fail += 1;
+      failedRows.push(row);
+    }
+    tagging.currentIndex = tagging.results.filter((r) => r === 'success' || r === 'fail').length;
+    saveTaggingState();
+  }
+  tagging.completedWorkers += 1;
+  const res = tagging.workerResults[tabId];
+  tagging.workerProgress[tabId] = {
+    workerIndex,
+    total: tagging.workerProgress[tabId].total,
+    success: res.success,
+    fail: res.fail,
+    currentRowId: '',
+    message: `Worker ${workerIndex + 1} 完成：成功 ${res.success}，失败 ${res.fail}`,
+  };
+  saveTaggingState();
+  console.log(`[runTaggingWorker] worker=${workerIndex} tab=${tabId} done`, tagging.workerResults[tabId]);
+  return failedRows;
+}
+
 // 启动时恢复状态
-chrome.storage.local.get(['matchingCsvHeaders', 'matchingCsvRows', 'matchingCurrentIndex', 'matchingStep', 'matchingCurrentTitle', 'matchingMessage', 'matchingResults', 'taggingRows', 'taggingCurrentIndex', 'taggingStep', 'taggingMessage', 'taggingResults', 'taggingTabId'], (result) => {
+chrome.storage.local.get([
+  'matchingCsvHeaders', 'matchingCsvRows', 'matchingCurrentIndex', 'matchingStep',
+  'matchingCurrentTitle', 'matchingMessage', 'matchingResults',
+  'taggingRows', 'taggingChunks', 'taggingCurrentIndex', 'taggingStep', 'taggingMessage',
+  'taggingResults', 'taggingTabIds', 'taggingCompletedWorkers', 'taggingTotalWorkers',
+  'taggingWorkerProgress', 'taggingTabId',
+], (result) => {
   if (result.matchingCsvRows && result.matchingCsvRows.length > 0) {
     state.matching.csvHeaders = result.matchingCsvHeaders || [];
     state.matching.csvRows = result.matchingCsvRows || [];
@@ -772,10 +987,15 @@ chrome.storage.local.get(['matchingCsvHeaders', 'matchingCsvRows', 'matchingCurr
   }
   if (result.taggingRows && result.taggingRows.length > 0) {
     state.tagging.rows = result.taggingRows || [];
+    state.tagging.chunks = result.taggingChunks || [];
     state.tagging.currentIndex = result.taggingCurrentIndex || 0;
     state.tagging.step = result.taggingStep || 'idle';
     state.tagging.message = result.taggingMessage || '就绪';
     state.tagging.results = result.taggingResults || [];
+    state.tagging.tabIds = result.taggingTabIds || [];
+    state.tagging.completedWorkers = result.taggingCompletedWorkers || 0;
+    state.tagging.totalWorkers = result.taggingTotalWorkers || 0;
+    state.tagging.workerProgress = result.taggingWorkerProgress || {};
     state.tagging.tabId = result.taggingTabId || null;
     state.tagging.isRunning = false;
     state.tagging.shouldStop = false;

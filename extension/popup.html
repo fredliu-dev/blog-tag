@@ -24,7 +24,7 @@
     }
 
     body {
-      width: 380px;
+      width: 720px;
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
       font-size: 13px;
@@ -32,13 +32,34 @@
       background: var(--bg);
       -webkit-font-smoothing: antialiased;
       line-height: 1.45;
+      overflow: hidden;
     }
 
     .card {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
       background: var(--card);
       border: 1px solid var(--border);
       box-shadow: var(--shadow);
-      padding: 20px;
+      border-radius: var(--radius);
+      padding: 16px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .left-panel,
+    .right-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 0;
+    }
+
+    .right-panel {
+      flex: 1;
+      justify-content: center;
+      min-height: 0;
     }
 
     h1 {
@@ -152,6 +173,35 @@
       grid-template-columns: 1fr 1fr;
       gap: 10px;
       margin-bottom: 10px;
+    }
+
+    .actions-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .parallel-select {
+      flex: 1;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .parallel-select:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .parallel-select option {
+      background: #1c1c1e;
+      color: var(--text);
     }
 
     .actions:last-of-type {
@@ -300,13 +350,16 @@
     }
 
     .status {
-      margin-top: 16px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      margin-top: 0;
       padding: 14px;
       border-radius: var(--radius-sm);
       background: rgba(255, 255, 255, 0.05);
       border: 1px solid var(--border);
       font-size: 12px;
-      min-height: 48px;
+      min-height: 0;
     }
 
     .status-step {
@@ -348,61 +401,103 @@
       background: #ff9f0a;
     }
 
-    .status-step.tagging {
+    .status-step.tagging,
+    .status-step.retry {
       background: #30d158;
     }
 
     .status-title {
+      flex: 1;
       font-size: 13px;
       color: var(--text);
       word-break: break-all;
       font-weight: 500;
     }
+
+    .worker-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .worker-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 6px 10px;
+      border-radius: 8px;
+      line-height: 1.4;
+    }
+
+    .worker-progress {
+      margin-left: 8px;
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 11px;
+      white-space: nowrap;
+    }
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>Blog Tag CSV 处理</h1>
+    <div class="left-panel">
+      <h1>Blog Tag CSV 处理</h1>
 
-    <div class="subtitle">
-      选择包含 URL 列的 CSV 文件，插件将提取 URL 路径最后两段作为 blog_title 和 Title 写入新文件，然后访问 Shopify 后台匹配文章 ID，最后给文章打上对应的标签。
-    </div>
+      <div class="subtitle">
+        选择包含 URL 列的 CSV 文件，插件将提取 URL 路径最后两段作为 blog_title 和 Title 写入新文件，然后访问 Shopify 后台匹配文章 ID，最后给文章打上对应的标签。
+      </div>
 
-    <div class="file-section">
-      <label for="csvFile" id="fileLabel" class="file-label">选择 CSV 文件</label>
-      <input type="file" id="csvFile" accept=".csv" />
+      <div class="file-section">
+        <label for="csvFile" id="fileLabel" class="file-label">选择 CSV 文件</label>
+        <input type="file" id="csvFile" accept=".csv" />
 
-      <div id="fileCard" class="file-card" style="display: none;">
-        <div class="file-info">
-          <div class="file-icon">CSV</div>
-          <div class="file-name" id="fileName"></div>
+        <div id="fileCard" class="file-card" style="display: none;">
+          <div class="file-info">
+            <div class="file-icon">CSV</div>
+            <div class="file-name" id="fileName"></div>
+          </div>
+          <button id="removeFile" class="remove-btn" type="button">删除</button>
         </div>
-        <button id="removeFile" class="remove-btn" type="button">删除</button>
+      </div>
+
+      <div class="actions">
+        <button id="match" class="match" disabled>匹配 ID</button>
+      </div>
+
+      <div class="actions">
+        <button id="export" class="export" disabled>导出 CSV</button>
+        <button id="tag" class="tag" disabled>打标签</button>
+      </div>
+
+      <div class="actions-row">
+        <select id="parallelCount" class="parallel-select" disabled>
+          <option value="1">1 个标签页</option>
+          <option value="2">2 个标签页</option>
+          <option value="3">3 个标签页</option>
+          <option value="4">4 个标签页</option>
+        </select>
+      </div>
+
+      <div class="actions" style="grid-template-columns: 1fr;">
+        <button id="stop" class="danger" disabled>停止</button>
       </div>
     </div>
 
-    <div class="actions">
-      <button id="process" class="primary" disabled>处理 CSV</button>
-      <button id="match" class="match" disabled>匹配 ID</button>
-    </div>
+    <div class="right-panel">
+      <div class="progress" id="progressContainer" style="display: none;">
+        <div class="progress-bar" id="progressBar"></div>
+        <div class="progress-text" id="progressText">0 / 0</div>
+      </div>
 
-    <div class="actions">
-      <button id="export" class="export" disabled>导出 CSV</button>
-      <button id="tag" class="tag" disabled>打标签</button>
-    </div>
-
-    <div class="actions" style="grid-template-columns: 1fr;">
-      <button id="stop" class="danger" disabled>停止</button>
-    </div>
-
-    <div class="progress" id="progressContainer" style="display: none;">
-      <div class="progress-bar" id="progressBar"></div>
-      <div class="progress-text" id="progressText">0 / 0</div>
-    </div>
-
-    <div class="status" id="status">
-      <div class="status-step idle" id="statusStep">就绪</div>
-      <div class="status-title" id="statusTitle">请选择 CSV 文件</div>
+      <div class="status" id="status">
+        <div class="status-step idle" id="statusStep">就绪</div>
+        <div class="status-title" id="statusTitle">请选择 CSV 文件</div>
+        <div class="worker-list" id="workerList"></div>
+      </div>
     </div>
   </div>
 

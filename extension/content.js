@@ -261,6 +261,8 @@
     console.log('[clickSaveButton] ArticleDetailsUpdate status=', status, 'hasError=', hasError);
 
     if (status >= 200 && status < 300 && !hasError) {
+      // 保存成功后临时屏蔽 beforeunload 弹窗，避免跳转时提示
+      window.postMessage({ type: 'SUPPRESS_BEFORE_UNLOAD', duration: 5000 }, '*');
       return { success: true, record };
     }
     return { success: false, error: `更新失败：HTTP ${status}${hasError ? '，GraphQL 返回错误' : ''}`, record };

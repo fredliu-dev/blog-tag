@@ -19,6 +19,17 @@
       ]
     }
   },
+  "blogTitle": [
+    "Blog",
+    "Stories",
+    "Ambassadors",
+    "Events",
+    "Press",
+    "Support",
+    "Guides",
+    "Newsroom"
+  ],
+  "maxParallelTabs": 4,
   "selectors": {
     "nextPageButton": ".Polaris-ButtonGroup__Item",
     "saveButton": "._ContextualButton_10jvh_1._Primary_10jvh_28",
