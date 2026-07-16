@@ -258,7 +258,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function canTag() {
     const idIndex = getColumnIndex('id');
     const tagIndex = getColumnIndex('标签');
-    return isProcessed && idIndex !== -1 && tagIndex !== -1 && csvRows.length > 0;
+    return idIndex !== -1 && tagIndex !== -1 && csvRows.length > 0;
   }
 
   function canSplit(parallel) {

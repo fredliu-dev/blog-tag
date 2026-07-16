@@ -250,22 +250,28 @@
     saveBtn.click();
     console.log('[clickSaveButton] 已点击保存按钮');
 
-    const res = await chrome.runtime.sendMessage({ type: 'WAIT_FOR_ARTICLE_DETAILS_UPDATE', timeout: 30000 });
-    if (!res || !res.success) {
-      return { success: false, error: res?.error || '未捕获到保存接口' };
+    // 监控 _Contents_1qn6f_1 元素，如果元素存在则等待，如果消失则等待 500ms 后返回成功
+    const contentsElement = document.querySelector('._Contents_1qn6f_1');
+    if (contentsElement) {
+      console.log('[clickSaveButton] 检测到 _Contents_1qn6f_1 元素，等待其消失');
+      let checkCount = 0;
+      while (document.querySelector('._Contents_1qn6f_1') && checkCount < 120) {
+        await waitFor(250);
+        checkCount++;
+        console.log('[clickSaveButton] 等待 _Contents_1qn6f_1 消失，checkCount=', checkCount);
+      }
+      if (document.querySelector('._Contents_1qn6f_1')) {
+        console.log('[clickSaveButton] _Contents_1qn6f_1 未消失，超时');
+        return { success: false, error: '保存超时：_Contents_1qn6f_1 元素未消失' };
+      }
+      console.log('[clickSaveButton] _Contents_1qn6f_1 已消失');
+    } else {
+      console.log('[clickSaveButton] 未检测到 _Contents_1qn6f_1 元素，可能无修改或已完成');
     }
 
-    const record = res.records?.ArticleDetailsUpdate || {};
-    const status = record.status || 0;
-    const hasError = hasGraphQLError(record.data);
-    console.log('[clickSaveButton] ArticleDetailsUpdate status=', status, 'hasError=', hasError);
-
-    if (status >= 200 && status < 300 && !hasError) {
-      // 保存成功后临时屏蔽 beforeunload 弹窗，避免跳转时提示
-      window.postMessage({ type: 'SUPPRESS_BEFORE_UNLOAD', duration: 5000 }, '*');
-      return { success: true, record };
-    }
-    return { success: false, error: `更新失败：HTTP ${status}${hasError ? '，GraphQL 返回错误' : ''}`, record };
+    // 保存成功后临时屏蔽 beforeunload 弹窗，避免跳转时提示
+    window.postMessage({ type: 'SUPPRESS_BEFORE_UNLOAD', duration: 5000 }, '*');
+    return { success: true };
   }
 
   function hasGraphQLError(data) {
