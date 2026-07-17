@@ -437,10 +437,10 @@ async function startMatchingProcess() {
 
   let shopifyTab;
   try {
-    shopifyTab = await getOrCreateShopifyTab();
+    shopifyTab = await getOrCreateShopifyWindow();
   } catch (err) {
     matching.step = 'idle';
-    matching.message = '无法创建 Shopify 标签页';
+    matching.message = '无法创建 Shopify 窗口';
     matching.isRunning = false;
     saveMatchingState();
     stopKeepAlive();
@@ -783,25 +783,96 @@ async function tryFillIdFromRecord(record, url, idIndex, row) {
   return false;
 }
 
-async function getOrCreateShopifyTab(createNew = false) {
+// 获取屏幕信息
+async function getScreenInfo() {
+  try {
+    // 尝试获取当前窗口信息来推断屏幕尺寸
+    const windows = await chrome.windows.getAll();
+    if (windows.length > 0) {
+      const win = windows[0];
+      return {
+        width: win.width || 1920,
+        height: win.height || 1080
+      };
+    }
+  } catch (err) {
+    console.warn('[getScreenInfo] 获取屏幕信息失败，使用默认值', err);
+  }
+
+  // 默认值
+  return {
+    width: 1920,
+    height: 1080
+  };
+}
+
+// 计算窗口位置和大小
+async function calculateWindowPosition(index, totalWindows) {
+  const screenInfo = await getScreenInfo();
+  const screenWidth = screenInfo.width;
+  const screenHeight = screenInfo.height;
+
+  // 计算网格布局
+  const cols = Math.ceil(Math.sqrt(totalWindows));
+  const rows = Math.ceil(totalWindows / cols);
+
+  // 计算每个窗口的大小
+  const windowWidth = Math.floor((screenWidth - 100) / cols);
+  const windowHeight = Math.floor((screenHeight - 100) / rows);
+
+  // 计算窗口位置
+  const col = index % cols;
+  const row = Math.floor(index / cols);
+
+  const left = 50 + col * windowWidth;
+  const top = 50 + row * windowHeight;
+
+  return {
+    left: Math.max(0, left),
+    top: Math.max(0, top),
+    width: Math.max(800, windowWidth), // 最小宽度800
+    height: Math.max(600, windowHeight) // 最小高度600
+  };
+}
+
+async function getOrCreateShopifyWindow(createNew = false, windowIndex = 0, totalWindows = 1) {
   if (!createNew) {
-    const tabs = await chrome.tabs.query({ url: 'https://admin.shopify.com/store/aftershokz-com/*' });
-    if (tabs.length > 0) {
-      await chrome.tabs.update(tabs[0].id, { active: true });
-      return tabs[0];
+    const windows = await chrome.windows.getAll({
+      windowTypes: ['popup', 'normal'],
+      populate: true
+    });
+
+    for (const win of windows) {
+      const shopifyTab = win.tabs?.find(tab =>
+        tab.url?.includes('admin.shopify.com/store/aftershokz-com')
+      );
+      if (shopifyTab) {
+        await chrome.windows.update(win.id, { focused: true });
+        return shopifyTab;
+      }
     }
   }
-  return new Promise((resolve, reject) => {
-    chrome.tabs.create({ url: 'https://admin.shopify.com/store/aftershokz-com/', active: true }, (tab) => {
+
+  return new Promise(async (resolve, reject) => {
+    const position = await calculateWindowPosition(windowIndex, totalWindows);
+
+    chrome.windows.create({
+      url: 'https://admin.shopify.com/store/aftershokz-com/',
+      type: 'popup',
+      left: position.left,
+      top: position.top,
+      width: position.width,
+      height: position.height
+    }, (window) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
       }
-      if (!tab || !tab.id) {
-        reject(new Error('创建标签页失败：返回的 tab 无效'));
+      if (!window || !window.tabs || !window.tabs[0]) {
+        reject(new Error('创建窗口失败'));
         return;
       }
-      resolve(tab);
+      resolve(window.tabs[0]);
     });
   });
 }
@@ -849,10 +920,10 @@ async function startTaggingProcess() {
     return;
   }
 
-  // 创建并行 tab
+  // 创建并行窗口
   const tabPromises = chunks.map(async (chunk, index) => {
     try {
-      const tab = await getOrCreateShopifyTab(true);
+      const tab = await getOrCreateShopifyWindow(true, index, chunks.length);
       tagging.tabIds.push(tab.id);
       tagging.workerResults[tab.id] = { success: 0, fail: 0 };
       tagging.workerProgress[tab.id] = {
@@ -866,7 +937,7 @@ async function startTaggingProcess() {
       tagging.tabRecords[tab.id] = [];
       return { tabId: tab.id, chunk, index };
     } catch (err) {
-      console.error('[startTaggingProcess] 创建 tab 失败', err);
+      console.error('[startTaggingProcess] 创建窗口失败', err);
       return null;
     }
   });
@@ -876,7 +947,7 @@ async function startTaggingProcess() {
 
   if (workers.length === 0) {
     tagging.step = 'idle';
-    tagging.message = '无法创建 Shopify 标签页';
+    tagging.message = '无法创建 Shopify 窗口';
     tagging.isRunning = false;
     tagging.isRetrying = false;
     saveTaggingState();
@@ -943,14 +1014,15 @@ async function retryFailedTagging(isAuto = false) {
   // 创建专门处理失败行的重试 worker
   let retryTab;
   try {
-    retryTab = await getOrCreateShopifyTab(true);
+    const retryWorkerIndex = tagging.totalWorkers;
+    const totalWindows = tagging.tabIds.length + 1; // 现有窗口 + 重试窗口
+    retryTab = await getOrCreateShopifyWindow(true, retryWorkerIndex, totalWindows);
   } catch (err) {
-    console.error('[retryFailedTagging] 创建重试 tab 失败', err);
+    console.error('[retryFailedTagging] 创建重试窗口失败', err);
     return;
   }
 
   tagging.tabIds.push(retryTab.id);
-  const retryWorkerIndex = tagging.totalWorkers;
   tagging.workerResults[retryTab.id] = { success: 0, fail: 0 };
   tagging.workerProgress[retryTab.id] = {
     workerIndex: retryWorkerIndex,

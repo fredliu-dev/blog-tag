@@ -269,7 +269,7 @@
     el.style.cssText = `
       position: fixed;
       top: 16px;
-      right: 16px;
+      left: 16px;
       z-index: 2147483647;
       min-width: 280px;
       max-width: 400px;
