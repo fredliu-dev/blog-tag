@@ -250,12 +250,10 @@
     }
 
     return `
+      <button data-close-info style="position:absolute;top:8px;right:8px;background:transparent;border:none;color:#fff;font-size:16px;cursor:pointer;line-height:1;padding:4px;">✕</button>
       ${globalProgressText ? `<div style="margin-bottom:8px;font-size:12px;font-weight:600;color:#30d158;">${globalProgressText}</div>` : ''}
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-        <div style="font-weight:700;font-size:14px;" data-info-title>${workerText}</div>
-        ${blogText ? `<div style="font-size:12px;opacity:0.8;">${blogText}</div>` : ''}
-        <button data-close-info style="background:transparent;border:none;color:#fff;font-size:16px;cursor:pointer;line-height:1;padding:0 4px;">✕</button>
-      </div>
+      <div style="font-weight:700;font-size:14px;padding-right:20px;" data-info-title>${workerText}</div>
+      ${blogText ? `<div style="margin-top:4px;font-size:12px;opacity:0.8;">${blogText}</div>` : ''}
       ${progressText ? `<div style="margin-top:8px;font-size:12px;opacity:0.9;">${progressText}</div>` : ''}
       <div style="margin-top:8px;font-size:12px;opacity:0.9;">${changeText}</div>
       ${changeDetail}
@@ -370,17 +368,17 @@
       console.log('[tagRow] afterTags=', afterTags);
 
       console.log('[tagRow] start clickSaveButton');
-      const saveResult = await clickSaveButton();
+      const saveResult = await clickSaveButton(tags);
       console.log('[tagRow] saveResult=', saveResult);
       if (!saveResult.success) {
-        return { success: false, action: 'replace', beforeTags, afterTags, addedTags, error: saveResult.error };
+        return { success: false, action: 'replace', beforeTags, afterTags: saveResult.finalTags || afterTags, addedTags, error: saveResult.error };
       }
 
       return {
         success: true,
         action: 'replace',
         beforeTags,
-        afterTags,
+        afterTags: saveResult.finalTags || afterTags,
         addedTags,
       };
     } else {
@@ -405,23 +403,23 @@
       console.log('[tagRow] afterTags=', afterTags);
 
       console.log('[tagRow] start clickSaveButton');
-      const saveResult = await clickSaveButton();
+      const saveResult = await clickSaveButton(tags);
       console.log('[tagRow] saveResult=', saveResult);
       if (!saveResult.success) {
-        return { success: false, action: 'add', beforeTags, afterTags, addedTags, error: saveResult.error };
+        return { success: false, action: 'add', beforeTags, afterTags: saveResult.finalTags || afterTags, addedTags, error: saveResult.error };
       }
 
       return {
         success: true,
         action: 'add',
         beforeTags,
-        afterTags,
+        afterTags: saveResult.finalTags || afterTags,
         addedTags,
       };
     }
   }
 
-  async function clickSaveButton() {
+  async function clickSaveButton(expectedTags) {
     const config = await getConfig();
     const selectors = config.selectors || {};
     let loopCount = 0;
@@ -458,10 +456,20 @@
     // 保存成功后临时屏蔽 beforeunload 弹窗，避免跳转时提示
     window.postMessage({ type: 'SUPPRESS_BEFORE_UNLOAD', duration: 5000 }, '*');
 
-    // 保存成功后等待短暂时间，让页面状态落盘即可返回
-    await waitFor(200);
+    // 保存成功后等待页面状态落盘
+    await waitFor(500);
 
-    return { success: true };
+    // 验证保存结果：重新读取当前标签，确认期望标签都在
+    const finalTags = readExistingTags();
+    console.log('[clickSaveButton] finalTags=', finalTags, 'expectedTags=', expectedTags);
+    if (finalTags.length > 0 && expectedTags && expectedTags.length > 0) {
+      const missing = expectedTags.filter((tag) => !finalTags.includes(tag));
+      if (missing.length > 0) {
+        return { success: false, error: `保存后标签验证失败，缺少: ${missing.join(', ')}` };
+      }
+    }
+
+    return { success: true, finalTags };
   }
 
   function hasGraphQLError(data) {
@@ -667,24 +675,37 @@
     return el;
   }
 
-  function waitForElement(selector, timeout = 5000) {
+  function isVisible(el) {
+    return !!(el && el.offsetParent !== null && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0);
+  }
+
+  function waitForElement(selector, timeout = 50000000000, checkVisible = false) {
     return new Promise((resolve) => {
-      const el = document.querySelector(selector);
-      if (el) {
-        resolve(el);
+      const check = () => {
+        const el = document.querySelector(selector);
+        if (el && (!checkVisible || isVisible(el))) {
+          return el;
+        }
+        return null;
+      };
+      const found = check();
+      if (found) {
+        resolve(found);
         return;
       }
       const observer = new MutationObserver(() => {
-        const found = document.querySelector(selector);
-        if (found) {
+        const el = check();
+        console.log('[waitForElement] check=', el);
+        if (el) {
           observer.disconnect();
-          resolve(found);
+          resolve(el);
         }
       });
       observer.observe(document.body, { childList: true, subtree: true });
       setTimeout(() => {
+        console.log('[waitForElement] timeout, resolve=', check());
         observer.disconnect();
-        resolve(document.querySelector(selector));
+        resolve(check());
       }, timeout);
     });
   }
@@ -702,22 +723,35 @@
       await waitFor(100);
     }
 
-    // 等待标签输入框出现，说明组件已初始化
-    await waitForElement(selectors.tagInput || 'input[name="article.tags"]', 10000);
+    // 等待标签输入框可见，说明组件已真正渲染
+    await waitForElement(selectors.tagInput || 'input[name="article.tags"]', 10000000000, true);
+
+    // 再额外等待，让标签异步加载
+    console.log('[waitForTagsStable] input visible, wait for tags to render');
+    await waitFor(800);
 
     let lastTags = [];
     let stableCount = 0;
+    let emptyCount = 0;
     for (let i = 0; i < 30; i++) {
       const currentTags = readExistingTags();
       console.log('[waitForTagsStable] attempt', i, 'readyState=', document.readyState, 'tags=', currentTags);
       if (JSON.stringify(currentTags) === JSON.stringify(lastTags)) {
         stableCount++;
-        if (stableCount >= 3) {
+        if (currentTags.length === 0) {
+          emptyCount++;
+          // 空标签时多等几轮，避免异步标签还没加载完就误判为稳定
+          if (emptyCount >= 10) {
+            console.log('[waitForTagsStable] tags stable (empty)');
+            return;
+          }
+        } else if (stableCount >= 3) {
           console.log('[waitForTagsStable] tags stable');
           return;
         }
       } else {
         stableCount = 0;
+        emptyCount = 0;
       }
       lastTags = currentTags;
       await waitFor(300);
