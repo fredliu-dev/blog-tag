@@ -29,7 +29,7 @@
     "Guides",
     "Newsroom"
   ],
-  "maxParallelTabs": 4,
+  "maxParallelTabs": 10,
   "selectors": {
     "nextPageButton": ".Polaris-ButtonGroup__Item",
     "saveButton": "._ContextualButton_10jvh_1._Primary_10jvh_28",

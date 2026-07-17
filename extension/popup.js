@@ -7,6 +7,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const matchBtn = document.getElementById('match');
   const exportBtn = document.getElementById('export');
   const parallelSelect = document.getElementById('parallelCount');
+  const parallelDec = document.getElementById('parallelDec');
+  const parallelInc = document.getElementById('parallelInc');
   const tagBtn = document.getElementById('tag');
   const stopBtn = document.getElementById('stop');
   const progressContainer = document.getElementById('progressContainer');
@@ -14,6 +16,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const progressText = document.getElementById('progressText');
   const statusStepEl = document.getElementById('statusStep');
   const statusTitleEl = document.getElementById('statusTitle');
+  const statusHeaderEl = document.getElementById('statusHeader');
+  const statusEmptyEl = document.getElementById('statusEmpty');
   const workerListEl = document.getElementById('workerList');
 
   let originalFileName = '';
@@ -33,7 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const config = await res.json();
       extensionConfig = {
         defaultChangeType: config.defaultChangeType || '替换',
-        maxParallelTabs: Math.max(1, Math.min(4, config.maxParallelTabs || 4)),
+        maxParallelTabs: Math.max(1, config.maxParallelTabs || 4),
       };
       updateParallelSelectOptions();
     } catch {
@@ -44,15 +48,46 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateParallelSelectOptions() {
     const max = extensionConfig.maxParallelTabs || 4;
-    parallelSelect.innerHTML = '';
-    for (let i = 1; i <= max; i++) {
-      const option = document.createElement('option');
-      option.value = String(i);
-      option.textContent = `${i} 个标签页`;
-      parallelSelect.appendChild(option);
-    }
+    parallelSelect.max = String(max);
+    parallelSelect.min = '1';
     parallelSelect.value = String(Math.min(parallelCount, max));
   }
+
+  function setParallelEnabled(enabled) {
+    parallelSelect.disabled = !enabled;
+    parallelDec.disabled = !enabled;
+    parallelInc.disabled = !enabled;
+  }
+
+  function clampParallelValue(rawValue) {
+    const max = extensionConfig.maxParallelTabs || 4;
+    let value = Number(rawValue) || 1;
+    return Math.max(1, Math.min(max, value));
+  }
+
+  parallelSelect.addEventListener('input', () => {
+    const value = clampParallelValue(parallelSelect.value);
+    parallelSelect.value = String(value);
+    parallelCount = value;
+  });
+
+  parallelSelect.addEventListener('blur', () => {
+    const value = clampParallelValue(parallelSelect.value);
+    parallelSelect.value = String(value);
+    parallelCount = value;
+  });
+
+  parallelDec.addEventListener('click', () => {
+    const value = clampParallelValue(parallelSelect.value) - 1;
+    parallelSelect.value = String(Math.max(1, value));
+    parallelCount = Math.max(1, value);
+  });
+
+  parallelInc.addEventListener('click', () => {
+    const value = clampParallelValue(clampParallelValue(parallelSelect.value) + 1);
+    parallelSelect.value = String(value);
+    parallelCount = value;
+  });
 
   function savePopupState() {
     chrome.storage.local.set({
@@ -111,7 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
       isProcessed = !!stored.popupIsProcessed;
       exportBtn.disabled = !isProcessed;
       tagBtn.disabled = !canTag();
-      parallelSelect.disabled = !canTag();
+      setParallelEnabled(canTag());
       // 静默恢复，不覆盖状态提示
     }
     if (stored.popupParallelCount) {
@@ -241,7 +276,7 @@ document.addEventListener('DOMContentLoaded', () => {
     progressContainer.style.display = 'none';
     progressBar.innerHTML = '';
     progressText.textContent = '0 / 0';
-    setStatus('idle', '请选择 CSV 文件');
+    showStatusEmpty();
   }
 
   function showFileCard(name) {
@@ -251,8 +286,9 @@ document.addEventListener('DOMContentLoaded', () => {
     fileCard.style.display = 'flex';
     exportBtn.disabled = !isProcessed;
     tagBtn.disabled = !canTag();
-    parallelSelect.disabled = !canTag();
+    setParallelEnabled(canTag());
     progressContainer.style.display = 'none';
+    setStatus('idle', '文件已选择，点击“匹配 ID”开始匹配');
   }
 
   function canTag() {
@@ -274,6 +310,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setStatus(step, title) {
+    if (statusHeaderEl) statusHeaderEl.style.display = '';
+    if (statusEmptyEl) statusEmptyEl.style.display = 'none';
     statusStepEl.className = 'status-step';
     statusStepEl.classList.add(step);
     const stepLabels = {
@@ -289,6 +327,11 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     statusStepEl.textContent = stepLabels[step] || '就绪';
     statusTitleEl.textContent = title || '';
+  }
+
+  function showStatusEmpty() {
+    if (statusHeaderEl) statusHeaderEl.style.display = 'none';
+    if (statusEmptyEl) statusEmptyEl.style.display = '';
   }
 
   function updateWorkerMessages(messages = []) {
@@ -320,9 +363,10 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateProgress(current, total, results = []) {
     progressContainer.style.display = 'block';
 
-    const effectiveCompleted = results && results.length > 0
-      ? results.filter((r) => r === 'success' || r === 'fail').length
+    const successCount = results && results.length > 0
+      ? results.filter((r) => r === 'success').length
       : current;
+    const effectiveCompleted = successCount;
     progressText.textContent = `${effectiveCompleted} / ${total}`;
 
     if (!results || results.length === 0) {
@@ -334,7 +378,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const successCount = results.filter((r) => r === 'success').length;
     const failCount = results.filter((r) => r === 'fail').length;
     const pendingCount = total - successCount - failCount;
 
@@ -405,6 +448,23 @@ document.addEventListener('DOMContentLoaded', () => {
       if (Array.isArray(status.workerMessages) && status.workerMessages.length > 0) {
         updateWorkerMessages(status.workerMessages);
       }
+
+      if (status.isRunning) {
+        // 运行中，确保按钮是停止状态
+        stopBtn.textContent = '停止';
+        stopBtn.classList.add('danger');
+        stopBtn.classList.remove('primary');
+      }
+
+      if (!status.isRunning && status.isRetrying) {
+        // 等待用户手动重试：按钮显示为重试，继续轮询
+        stopBtn.textContent = `重试 (${status.failedRowsCount || 0})`;
+        stopBtn.classList.remove('danger');
+        stopBtn.classList.add('primary');
+        stopBtn.disabled = false;
+        return;
+      }
+
       if (!status.isRunning) {
         stopStatusPolling();
         popupCurrentAction = '';
@@ -441,6 +501,10 @@ document.addEventListener('DOMContentLoaded', () => {
           console.log('[startTaggingStatusPolling] savePopupState done');
         }
 
+        // 恢复按钮为默认状态
+        stopBtn.textContent = '停止';
+        stopBtn.classList.add('danger');
+        stopBtn.classList.remove('primary');
         matchBtn.disabled = false;
         exportBtn.disabled = false;
         tagBtn.disabled = !canTag();
@@ -485,7 +549,7 @@ document.addEventListener('DOMContentLoaded', () => {
       matchBtn.disabled = !(csvRows.length > 0);
 
       tagBtn.disabled = !canTag();
-      parallelSelect.disabled = !canTag();
+      setParallelEnabled(canTag());
     } else {
       resetState();
     }
@@ -528,6 +592,18 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   stopBtn.addEventListener('click', async () => {
+    const isRetryMode = stopBtn.textContent.includes('重试');
+    if (isRetryMode) {
+      // 点击重试：启动失败重试流程，按钮变回停止
+      stopBtn.textContent = '停止';
+      stopBtn.classList.add('danger');
+      stopBtn.classList.remove('primary');
+      await chrome.runtime.sendMessage({ type: 'RETRY_FAILED_TAGGING' });
+      popupCurrentAction = 'tagging';
+      savePopupState();
+      startTaggingStatusPolling();
+      return;
+    }
     await chrome.runtime.sendMessage({ type: 'STOP_MATCHING' });
     await chrome.runtime.sendMessage({ type: 'STOP_TAGGING' });
     stopStatusPolling();
@@ -536,8 +612,11 @@ document.addEventListener('DOMContentLoaded', () => {
     matchBtn.disabled = false;
     exportBtn.disabled = !isProcessed;
     tagBtn.disabled = !canTag();
-    parallelSelect.disabled = !canTag();
+    setParallelEnabled(canTag());
     stopBtn.disabled = true;
+    stopBtn.textContent = '停止';
+    stopBtn.classList.add('danger');
+    stopBtn.classList.remove('primary');
     updateWorkerMessages([]);
     setStatus('idle', '已停止');
   });
@@ -584,7 +663,7 @@ document.addEventListener('DOMContentLoaded', () => {
     matchBtn.disabled = true;
     exportBtn.disabled = true;
     tagBtn.disabled = true;
-    parallelSelect.disabled = true;
+    setParallelEnabled(false);
     stopBtn.disabled = false;
     setStatus('tagging', '开始打标签...');
     popupCurrentAction = 'tagging';
@@ -660,10 +739,34 @@ document.addEventListener('DOMContentLoaded', () => {
         matchBtn.disabled = true;
         exportBtn.disabled = true;
         tagBtn.disabled = true;
-        parallelSelect.disabled = true;
+        setParallelEnabled(false);
         stopBtn.disabled = false;
+        stopBtn.textContent = '停止';
+        stopBtn.classList.add('danger');
+        stopBtn.classList.remove('primary');
         popupCurrentAction = 'tagging';
         savePopupState();
+        if (Array.isArray(tagStatus.workerMessages) && tagStatus.workerMessages.length > 0) {
+          updateWorkerMessages(tagStatus.workerMessages);
+        }
+        startTaggingStatusPolling();
+        return;
+      }
+      if (tagStatus && tagStatus.isRetrying) {
+        // 处于等待手动重试状态
+        matchBtn.disabled = true;
+        exportBtn.disabled = true;
+        tagBtn.disabled = true;
+        setParallelEnabled(false);
+        stopBtn.disabled = false;
+        stopBtn.textContent = `重试 (${tagStatus.failedRowsCount || 0})`;
+        stopBtn.classList.remove('danger');
+        stopBtn.classList.add('primary');
+        popupCurrentAction = 'tagging';
+        savePopupState();
+        if (tagStatus.total > 0) {
+          updateProgress(tagStatus.currentIndex, tagStatus.total, tagStatus.results || []);
+        }
         if (Array.isArray(tagStatus.workerMessages) && tagStatus.workerMessages.length > 0) {
           updateWorkerMessages(tagStatus.workerMessages);
         }
@@ -699,6 +802,9 @@ document.addEventListener('DOMContentLoaded', () => {
             savePopupState();
           }
           setStatus('done', '打标签完成');
+          stopBtn.textContent = '停止';
+          stopBtn.classList.add('danger');
+          stopBtn.classList.remove('primary');
           matchBtn.disabled = false;
           exportBtn.disabled = false;
           tagBtn.disabled = !canTag();
@@ -721,6 +827,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (csvRows.length > 0) {
         // 没有运行中任务但已有数据，显示默认就绪状态
         setStatus('idle', '就绪');
+      } else {
+        showStatusEmpty();
       }
     });
   }

@@ -29,6 +29,9 @@ const state = {
     completedWorkers: 0,
     totalWorkers: 0,
     tabId: null,
+    failedRows: [], // 所有 worker 完成后汇总的失败行，用于手动重试
+    isRetrying: false, // 是否处于等待用户手动重试的状态
+    retryDone: false, // 是否已经执行过一次自动重试
   },
 };
 
@@ -74,6 +77,9 @@ function saveTaggingState() {
     taggingCompletedWorkers: state.tagging.completedWorkers,
     taggingTotalWorkers: state.tagging.totalWorkers,
     taggingTabId: state.tagging.tabId,
+    taggingFailedRows: state.tagging.failedRows,
+    taggingIsRetrying: state.tagging.isRetrying,
+    taggingRetryDone: state.tagging.retryDone,
   });
   console.log('[saveTaggingState] rows=', state.tagging.rows.map((r) => ({ id: r.id, rowIndex: r.rowIndex, beforeTags: r.beforeTags, afterTags: r.afterTags, status: r.status })));
 }
@@ -92,28 +98,41 @@ function getMatchingStatus() {
 
 function getTaggingStatus() {
   const total = state.tagging.rows.length;
+  const successCount = state.tagging.results.filter((r) => r === 'success').length;
+  const failCount = state.tagging.results.filter((r) => r === 'fail').length;
+
   const workerMessages = Object.values(state.tagging.workerProgress || {})
     .sort((a, b) => (a.workerIndex || 0) - (b.workerIndex || 0))
     .map((p) => {
-      const progress = p.total > 0 ? `${p.success + p.fail}/${p.total}` : '';
+      const progress = p.total > 0 ? `${p.success}/${p.total}（失败 ${p.fail}）` : '';
       return {
         message: p.message || '准备中',
         progress,
       };
     });
 
-  const done = state.tagging.results.filter((r) => r === 'success' || r === 'fail').length;
+  if (state.tagging.isRetrying) {
+    workerMessages.push({
+      message: `还有 ${state.tagging.failedRows.length} 条失败，请点击左侧重试按钮`,
+      progress: '',
+    });
+  }
+
   return {
     isRunning: state.tagging.isRunning,
     step: state.tagging.step,
     message: state.tagging.message,
-    currentIndex: done,
+    currentIndex: successCount,
     total,
+    successCount,
+    failCount,
     results: state.tagging.results,
     tabIds: state.tagging.tabIds,
     completedWorkers: state.tagging.completedWorkers,
     totalWorkers: state.tagging.totalWorkers,
     workerMessages,
+    isRetrying: state.tagging.isRetrying,
+    failedRowsCount: state.tagging.failedRows.length,
   };
 }
 
@@ -280,16 +299,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     state.tagging.completedWorkers = 0;
     state.tagging.totalWorkers = chunks.length;
     state.tagging.tabId = null;
+    state.tagging.failedRows = [];
+    state.tagging.isRetrying = false;
+    state.tagging.retryDone = false;
     saveTaggingState();
     startTaggingProcess();
     sendResponse({ success: true });
     return true;
   }
 
+  if (message.type === 'RETRY_FAILED_TAGGING') {
+    state.tagging.isRetrying = false;
+    state.tagging.isRunning = true;
+    state.tagging.shouldStop = false;
+    state.tagging.step = 'retry';
+    state.tagging.message = '开始重试失败的标签';
+    saveTaggingState();
+    retryFailedTagging();
+    sendResponse({ success: true });
+    return true;
+  }
+
   if (message.type === 'STOP_TAGGING') {
     state.tagging.shouldStop = true;
-    state.tagging.step = 'idle';
-    state.tagging.message = '已停止';
+    if (!state.tagging.isRetrying) {
+      state.tagging.step = 'idle';
+      state.tagging.message = '已停止';
+    } else {
+      state.tagging.message = '重试已停止';
+    }
     saveTaggingState();
     sendResponse({ success: true });
     return true;
@@ -753,8 +791,18 @@ async function getOrCreateShopifyTab(createNew = false) {
       return tabs[0];
     }
   }
-  return new Promise((resolve) => {
-    chrome.tabs.create({ url: 'https://admin.shopify.com/store/aftershokz-com/', active: true }, (tab) => resolve(tab));
+  return new Promise((resolve, reject) => {
+    chrome.tabs.create({ url: 'https://admin.shopify.com/store/aftershokz-com/', active: true }, (tab) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!tab || !tab.id) {
+        reject(new Error('创建标签页失败：返回的 tab 无效'));
+        return;
+      }
+      resolve(tab);
+    });
   });
 }
 
@@ -795,6 +843,7 @@ async function startTaggingProcess() {
     tagging.step = 'idle';
     tagging.message = '没有可处理的标签数据';
     tagging.isRunning = false;
+    tagging.isRetrying = false;
     saveTaggingState();
     stopKeepAlive();
     return;
@@ -829,6 +878,7 @@ async function startTaggingProcess() {
     tagging.step = 'idle';
     tagging.message = '无法创建 Shopify 标签页';
     tagging.isRunning = false;
+    tagging.isRetrying = false;
     saveTaggingState();
     stopKeepAlive();
     return;
@@ -839,42 +889,116 @@ async function startTaggingProcess() {
   // 并行启动所有 worker，并收集各自的失败行
   const workerResults = await Promise.all(workers.map((worker) => runTaggingWorker(worker.tabId, worker.chunk, worker.index)));
 
-  // 按原 worker 收集失败项，重试一次
-  let hasRetry = false;
-  for (let i = 0; i < workers.length; i++) {
-    const worker = workers[i];
-    const failedRows = workerResults[i] || [];
-    if (failedRows.length === 0 || tagging.shouldStop) continue;
+  // 汇总所有失败行
+  const allFailedRows = [];
+  for (const failedRows of workerResults) {
+    if (failedRows && failedRows.length > 0) {
+      allFailedRows.push(...failedRows);
+    }
+  }
+  tagging.failedRows = allFailedRows;
+  saveTaggingState();
 
-    hasRetry = true;
-    tagging.message = '正在重试失败的标签...';
+  if (allFailedRows.length === 0 || tagging.shouldStop) {
+    finishTagging();
+    return;
+  }
+
+  // 所有 worker 完成后，统一创建一个重试 worker 自动重试一次
+  tagging.message = '正在重试失败的标签...';
+  tagging.step = 'retry';
+  saveTaggingState();
+
+  await retryFailedTagging(true);
+
+  // 自动重试后如果还有失败，进入等待用户手动重试状态
+  if (tagging.failedRows.length > 0 && !tagging.shouldStop) {
+    tagging.isRetrying = true;
+    tagging.isRunning = false;
     tagging.step = 'retry';
+    tagging.message = `还有 ${tagging.failedRows.length} 条失败，请点击左侧重试按钮`;
     saveTaggingState();
-
-    console.log(`[startTaggingProcess] worker ${worker.index + 1} retry ${failedRows.length} failed rows`);
-
-    // 重置这些行的结果状态
-    failedRows.forEach((row) => {
-      tagging.results[row.rowIndex] = null;
-      row.status = '';
-    });
-
-    // 把重试数量加到该 worker 的 total
-    tagging.workerProgress[worker.tabId].total += failedRows.length;
-    tagging.workerProgress[worker.tabId].message = `Worker ${worker.index + 1} 准备重试`;
-    saveTaggingState();
-
-    await runTaggingWorker(worker.tabId, failedRows, worker.index);
+    stopKeepAlive();
+    return;
   }
 
-  if (hasRetry) {
-    tagging.message = '正在重试失败的标签...';
+  finishTagging();
+}
+
+async function retryFailedTagging(isAuto = false) {
+  const tagging = state.tagging;
+  if (tagging.shouldStop) return;
+
+  let failedRows = tagging.failedRows;
+  if (!failedRows || failedRows.length === 0) {
+    return;
   }
 
+  // 重置失败行的状态，准备重试
+  failedRows.forEach((row) => {
+    tagging.results[row.rowIndex] = null;
+    row.status = '';
+  });
+
+  // 创建专门处理失败行的重试 worker
+  let retryTab;
+  try {
+    retryTab = await getOrCreateShopifyTab(true);
+  } catch (err) {
+    console.error('[retryFailedTagging] 创建重试 tab 失败', err);
+    return;
+  }
+
+  tagging.tabIds.push(retryTab.id);
+  const retryWorkerIndex = tagging.totalWorkers;
+  tagging.workerResults[retryTab.id] = { success: 0, fail: 0 };
+  tagging.workerProgress[retryTab.id] = {
+    workerIndex: retryWorkerIndex,
+    total: failedRows.length,
+    success: 0,
+    fail: 0,
+    currentRowId: '',
+    message: '重试 Worker 准备中',
+  };
+  tagging.tabRecords[retryTab.id] = [];
+  saveTaggingState();
+
+  const retryFailedRows = await runTaggingWorker(retryTab.id, failedRows, retryWorkerIndex);
+  tagging.failedRows = retryFailedRows;
+
+  const res = tagging.workerResults[retryTab.id];
+  tagging.workerProgress[retryTab.id] = {
+    workerIndex: retryWorkerIndex,
+    total: failedRows.length,
+    success: res.success,
+    fail: retryFailedRows.length,
+    currentRowId: '',
+    message: `重试 Worker 完成：成功 ${res.success}，失败 ${retryFailedRows.length}`,
+  };
+  saveTaggingState();
+
+  if (!isAuto) {
+    // 手动重试结束后，如果还有失败则继续等待用户，否则完成
+    if (tagging.failedRows.length > 0) {
+      tagging.isRetrying = true;
+      tagging.isRunning = false;
+      tagging.step = 'retry';
+      tagging.message = `还有 ${tagging.failedRows.length} 条失败，请点击左侧重试按钮`;
+      saveTaggingState();
+      stopKeepAlive();
+    } else {
+      finishTagging();
+    }
+  }
+}
+
+function finishTagging() {
+  const tagging = state.tagging;
   tagging.step = 'done';
   tagging.message = '打标签完成';
   tagging.isRunning = false;
-  tagging.currentIndex = 0;
+  tagging.isRetrying = false;
+  tagging.currentIndex = tagging.results.filter((r) => r === 'success').length;
   saveTaggingState();
   stopKeepAlive();
 
@@ -892,7 +1016,19 @@ async function runTaggingWorker(tabId, chunk, workerIndex) {
   const tagging = state.tagging;
   const failedRows = [];
   for (let i = 0; i < chunk.length; i++) {
-    if (tagging.shouldStop) break;
+    if (tagging.shouldStop) {
+      // 停止时把剩余未处理的行也标记为失败，保证后续可以重试
+      for (let j = i; j < chunk.length; j++) {
+        const remainingRow = chunk[j];
+        if (tagging.results[remainingRow.rowIndex] !== 'success') {
+          tagging.results[remainingRow.rowIndex] = 'fail';
+          tagging.workerResults[tabId].fail += 1;
+          tagging.workerProgress[tabId].fail += 1;
+          failedRows.push(remainingRow);
+        }
+      }
+      break;
+    }
 
     const row = chunk[i];
     tagging.step = 'process';
@@ -914,7 +1050,25 @@ async function runTaggingWorker(tabId, chunk, workerIndex) {
       await waitForTabLoad(tabId);
 
       console.log('[runTaggingWorker] send TAG_ROW to tab', tabId, 'row=', row);
-      const result = await chrome.tabs.sendMessage(tabId, { type: 'TAG_ROW', row });
+      const globalTotal = tagging.rows.length;
+      const globalSuccess = tagging.results.filter((r) => r === 'success').length;
+      const globalFail = tagging.results.filter((r) => r === 'fail').length;
+      const result = await chrome.tabs.sendMessage(tabId, {
+        type: 'TAG_ROW',
+        row,
+        workerIndex,
+        workerTotal: tagging.totalWorkers,
+        workerProgress: {
+          total: tagging.workerProgress[tabId].total,
+          success: tagging.workerProgress[tabId].success,
+          fail: tagging.workerProgress[tabId].fail,
+        },
+        globalProgress: {
+          total: globalTotal,
+          success: globalSuccess,
+          fail: globalFail,
+        },
+      });
       console.log('[runTaggingWorker] tag result', result, 'for row', row);
 
       // 等待 500ms，让页面状态稳定后再跳转
@@ -947,7 +1101,7 @@ async function runTaggingWorker(tabId, chunk, workerIndex) {
       tagging.workerProgress[tabId].fail += 1;
       failedRows.push(row);
     }
-    tagging.currentIndex = tagging.results.filter((r) => r === 'success' || r === 'fail').length;
+    tagging.currentIndex = tagging.results.filter((r) => r === 'success').length;
     saveTaggingState();
   }
   tagging.completedWorkers += 1;
@@ -971,7 +1125,7 @@ chrome.storage.local.get([
   'matchingCurrentTitle', 'matchingMessage', 'matchingResults',
   'taggingRows', 'taggingChunks', 'taggingCurrentIndex', 'taggingStep', 'taggingMessage',
   'taggingResults', 'taggingTabIds', 'taggingCompletedWorkers', 'taggingTotalWorkers',
-  'taggingWorkerProgress', 'taggingTabId',
+  'taggingWorkerProgress', 'taggingTabId', 'taggingFailedRows', 'taggingIsRetrying', 'taggingRetryDone',
 ], (result) => {
   if (result.matchingCsvRows && result.matchingCsvRows.length > 0) {
     state.matching.csvHeaders = result.matchingCsvHeaders || [];
@@ -997,6 +1151,9 @@ chrome.storage.local.get([
     state.tagging.totalWorkers = result.taggingTotalWorkers || 0;
     state.tagging.workerProgress = result.taggingWorkerProgress || {};
     state.tagging.tabId = result.taggingTabId || null;
+    state.tagging.failedRows = result.taggingFailedRows || [];
+    state.tagging.isRetrying = result.taggingIsRetrying || false;
+    state.tagging.retryDone = result.taggingRetryDone || false;
     state.tagging.isRunning = false;
     state.tagging.shouldStop = false;
     saveTaggingState();

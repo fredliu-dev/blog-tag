@@ -78,7 +78,7 @@
     }
 
     if (message.type === 'TAG_ROW') {
-      handleTagRow(message.row, safeSendResponse).catch((err) => {
+      handleTagRow(message, safeSendResponse).catch((err) => {
         console.error('[onMessage] TAG_ROW error', err);
         safeSendResponse({ success: false, error: err?.message || '未知错误' });
       });
@@ -133,16 +133,199 @@
     }
   }
 
-  async function handleTagRow(row, sendResponse) {
+  async function handleTagRow(message, sendResponse) {
+    const row = message.row || {};
+    const workerIndex = message.workerIndex;
+    const workerTotal = message.workerTotal;
+    const workerProgress = message.workerProgress;
+    let responded = false;
+    const safeSendResponse = (response) => {
+      if (responded) return;
+      responded = true;
+      sendResponse(response);
+    };
+    const onUnload = () => safeSendResponse({ success: false, error: '页面在处理过程中刷新或关闭' });
+    window.addEventListener('beforeunload', onUnload);
+    const globalProgress = message.globalProgress || {};
     try {
       console.log('[handleTagRow] start row=', row);
+      showWorkerInfoBox({
+        workerIndex,
+        workerTotal,
+        workerProgress,
+        globalProgress,
+        blogId: row.id,
+        targetTags: row.tags || [],
+        changeType: row.changeType || '替换',
+        status: 'processing',
+      });
       const result = await tagRow(row);
-      console.log('[handleTagRow] success result=', result);
-      sendResponse(result);
+      console.log('[handleTagRow] result=', result);
+      updateWorkerInfoBox({
+        status: result.success ? 'success' : 'error',
+        beforeTags: result.beforeTags,
+        afterTags: result.afterTags,
+        error: result.error,
+        globalProgress,
+      });
+      safeSendResponse(result);
     } catch (err) {
       console.error('[handleTagRow] error', err);
-      sendResponse({ success: false, error: err.message });
+      updateWorkerInfoBox({ status: 'error', error: err.message });
+      safeSendResponse({ success: false, error: err.message });
+    } finally {
+      window.removeEventListener('beforeunload', onUnload);
     }
+  }
+
+  let workerInfoBoxEl = null;
+  let workerInfoBoxHideTimer = null;
+
+  function removeWorkerInfoBox() {
+    if (workerInfoBoxHideTimer) {
+      clearTimeout(workerInfoBoxHideTimer);
+      workerInfoBoxHideTimer = null;
+    }
+    if (workerInfoBoxEl) {
+      workerInfoBoxEl.remove();
+      workerInfoBoxEl = null;
+    }
+  }
+
+  function renderTagPills(tags) {
+    if (!Array.isArray(tags) || tags.length === 0) {
+      return '<span style="display:inline-block;padding:2px 8px;border-radius:6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:#8e8e93;font-size:11px;">无</span>';
+    }
+    return tags.map((tag) =>
+      `<span style="display:inline-block;padding:2px 8px;border-radius:6px;background:rgba(10,132,255,0.12);border:1px solid rgba(10,132,255,0.35);color:#64d2ff;font-size:11px;margin:0 4px 4px 0;"
+      >${tag}</span>`
+    ).join('');
+  }
+
+  function renderWorkerInfoBoxContent(data) {
+    const workerText = data.workerIndex != null
+      ? `Worker ${data.workerIndex + 1}${data.workerTotal ? ` / ${data.workerTotal}` : ''}`
+      : 'Worker';
+    const blogText = data.blogId ? `博客 ID: ${data.blogId}` : '';
+    const changeText = `修改类型: ${data.changeType || '替换'}`;
+
+    const globalProgress = data.globalProgress || {};
+    const globalTotal = globalProgress.total || 0;
+    const globalSuccess = globalProgress.success || 0;
+    const globalFail = globalProgress.fail || 0;
+    const globalCurrent = globalSuccess + globalFail;
+    const globalProgressText = globalTotal > 0
+      ? `总进度: ${globalCurrent} / ${globalTotal} · 成功 ${globalSuccess} · 失败 ${globalFail}`
+      : '';
+
+    const progress = data.workerProgress || {};
+    const progressTotal = progress.total || 0;
+    const progressSuccess = progress.success || 0;
+    const progressFail = progress.fail || 0;
+    const progressCurrent = progressSuccess + progressFail + 1;
+    const progressText = progressTotal > 0
+      ? `Worker 进度: ${progressCurrent} / ${progressTotal} · 成功 ${progressSuccess} · 失败 ${progressFail}`
+      : '';
+
+    let statusText = '';
+    let statusColor = '#0a84ff';
+    if (data.status === 'processing') {
+      statusText = '处理中...';
+      statusColor = '#0a84ff';
+    } else if (data.status === 'success') {
+      statusText = '完成';
+      statusColor = '#30d158';
+    } else if (data.status === 'error') {
+      statusText = data.error ? `失败: ${data.error}` : '失败';
+      statusColor = '#ff453a';
+    }
+
+    let changeDetail = '';
+    if (Array.isArray(data.beforeTags) || Array.isArray(data.afterTags)) {
+      const before = Array.isArray(data.beforeTags) ? renderTagPills(data.beforeTags) : '<span style="color:#8e8e93;font-size:12px;">读取中...</span>';
+      const after = Array.isArray(data.afterTags) ? renderTagPills(data.afterTags) : '<span style="color:#8e8e93;font-size:12px;">读取中...</span>';
+      changeDetail = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;"><span style="font-size:12px;opacity:0.9;">标签变更：</span>${before}<span style="font-size:12px;opacity:0.6;">→</span>${after}</div>`;
+    } else {
+      changeDetail = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;"><span style="font-size:12px;opacity:0.9;">目标标签：</span>${renderTagPills(data.targetTags)}</div>`;
+    }
+
+    return `
+      ${globalProgressText ? `<div style="margin-bottom:8px;font-size:12px;font-weight:600;color:#30d158;">${globalProgressText}</div>` : ''}
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <div style="font-weight:700;font-size:14px;" data-info-title>${workerText}</div>
+        ${blogText ? `<div style="font-size:12px;opacity:0.8;">${blogText}</div>` : ''}
+        <button data-close-info style="background:transparent;border:none;color:#fff;font-size:16px;cursor:pointer;line-height:1;padding:0 4px;">✕</button>
+      </div>
+      ${progressText ? `<div style="margin-top:8px;font-size:12px;opacity:0.9;">${progressText}</div>` : ''}
+      <div style="margin-top:8px;font-size:12px;opacity:0.9;">${changeText}</div>
+      ${changeDetail}
+      <div style="margin-top:8px;font-size:12px;font-weight:600;color:${statusColor};" data-info-status>${statusText}</div>
+    `;
+  }
+
+  function showWorkerInfoBox(data) {
+    removeWorkerInfoBox();
+
+    const el = document.createElement('div');
+    el.id = 'blog-tag-worker-info';
+    el.style.cssText = `
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 2147483647;
+      min-width: 280px;
+      max-width: 400px;
+      padding: 14px 16px;
+      background: #1c1c1e;
+      color: #f5f5f7;
+      border-radius: 14px;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.08);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    `;
+    el.innerHTML = renderWorkerInfoBoxContent(data);
+    document.body.appendChild(el);
+    workerInfoBoxEl = el;
+    setInfoBoxDataset(data);
+
+    el.querySelector('[data-close-info]').addEventListener('click', () => {
+      removeWorkerInfoBox();
+    });
+  }
+
+  function updateWorkerInfoBox(data) {
+    if (!workerInfoBoxEl) return;
+    const prevData = {
+      workerIndex: workerInfoBoxEl.dataset.workerIndex ? Number(workerInfoBoxEl.dataset.workerIndex) : undefined,
+      workerTotal: workerInfoBoxEl.dataset.workerTotal ? Number(workerInfoBoxEl.dataset.workerTotal) : undefined,
+      workerProgress: workerInfoBoxEl.dataset.workerProgress ? JSON.parse(workerInfoBoxEl.dataset.workerProgress) : undefined,
+      blogId: workerInfoBoxEl.dataset.blogId,
+      targetTags: workerInfoBoxEl.dataset.targetTags ? JSON.parse(workerInfoBoxEl.dataset.targetTags) : [],
+      changeType: workerInfoBoxEl.dataset.changeType,
+    };
+    const nextData = { ...prevData, ...data };
+    workerInfoBoxEl.innerHTML = renderWorkerInfoBoxContent(nextData);
+    workerInfoBoxEl.querySelector('[data-close-info]').addEventListener('click', () => {
+      removeWorkerInfoBox();
+    });
+
+    if (data.status === 'success' || data.status === 'error') {
+      workerInfoBoxHideTimer = setTimeout(() => {
+        removeWorkerInfoBox();
+      }, 5000);
+    }
+  }
+
+  function setInfoBoxDataset(data) {
+    if (!workerInfoBoxEl) return;
+    if (data.workerIndex != null) workerInfoBoxEl.dataset.workerIndex = String(data.workerIndex);
+    if (data.workerTotal != null) workerInfoBoxEl.dataset.workerTotal = String(data.workerTotal);
+    if (data.workerProgress) workerInfoBoxEl.dataset.workerProgress = JSON.stringify(data.workerProgress);
+    if (data.blogId != null) workerInfoBoxEl.dataset.blogId = String(data.blogId);
+    if (Array.isArray(data.targetTags)) workerInfoBoxEl.dataset.targetTags = JSON.stringify(data.targetTags);
+    if (data.changeType != null) workerInfoBoxEl.dataset.changeType = String(data.changeType);
   }
 
   async function tagRow(row) {
@@ -155,6 +338,7 @@
 
     await waitForTagsStable();
     const beforeTags = readExistingTags();
+    updateWorkerInfoBox({ beforeTags });
     console.log('[tagRow] final beforeTags=', beforeTags);
 
     if (shouldReplace) {
@@ -182,6 +366,7 @@
       }
 
       const afterTags = readExistingTags();
+      updateWorkerInfoBox({ afterTags });
       console.log('[tagRow] afterTags=', afterTags);
 
       console.log('[tagRow] start clickSaveButton');
@@ -216,6 +401,7 @@
       }
 
       const afterTags = readExistingTags();
+      updateWorkerInfoBox({ afterTags });
       console.log('[tagRow] afterTags=', afterTags);
 
       console.log('[tagRow] start clickSaveButton');
@@ -271,6 +457,10 @@
 
     // 保存成功后临时屏蔽 beforeunload 弹窗，避免跳转时提示
     window.postMessage({ type: 'SUPPRESS_BEFORE_UNLOAD', duration: 5000 }, '*');
+
+    // 保存成功后等待短暂时间，让页面状态落盘即可返回
+    await waitFor(200);
+
     return { success: true };
   }
 
@@ -432,6 +622,12 @@
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       await waitFor(200);
     }
+
+    // 触发 blur 或 Tab 让下拉框收起
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    input.blur();
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    await waitFor(200);
 
     return true;
   }
